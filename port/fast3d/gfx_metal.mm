@@ -75,6 +75,31 @@ std::vector<FramebufferMtl> sFramebuffers; // index 0 = the screen
 FilteringMode sTextureFilter = FILTER_THREE_POINT;
 MipmapFilteringMode sMipmapFilter = MIPMAP_DISABLED;
 int sShadersCompiled;
+
+// Per-frame drawing state (M4b). Until M6 everything is drawn straight to the drawable
+// (video.c turns framebuffer effects off for Metal).
+struct FragUniforms {
+    int32_t frame_count;
+    float noise_scale;
+    int32_t three_point_filter0;
+    int32_t three_point_filter1;
+};
+id<CAMetalDrawable> sDrawable;
+id<MTLCommandBuffer> sCmd;
+id<MTLRenderCommandEncoder> sEnc;
+id<MTLTexture> sDepthTex;
+id<MTLTexture> sWhiteTex;
+id<MTLSamplerState> sDefaultSampler;
+std::unordered_map<uint64_t, id<MTLRenderPipelineState>> sPipelines;
+std::unordered_map<uint32_t, id<MTLDepthStencilState>> sDepthStates;
+uint32_t sFrameCount;
+uint32_t sStatDraws, sStatTris, sStatSkipped; // PD_METAL_STATS=1 logs them every 60 frames
+float sNoiseScale = 1.0f;
+bool sUseAlpha, sModulate;
+bool sDepthTest, sDepthUpdate, sDepthDecal;
+MTLCompareFunction sDepthFunc = MTLCompareFunctionLess;
+float sZNear = 0.0f, sZFar = 1.0f;
+int sVp[4], sSc[4];
 int sShadersFailed;
 int sAnisotropy = 1;
 
@@ -87,8 +112,9 @@ int gfx_metal_get_max_texture_size(void) {
 }
 
 GfxClipParameters gfx_metal_get_clip_parameters(void) {
-    // Metal clip space: z in [0, 1]; framebuffer textures are top-left origin.
-    return { true, true };
+    // Metal clip space: z in [0, 1]; y up like GL, so no flip while drawing to the screen.
+    // M6: offscreen framebuffers may need invert_y.
+    return { true, false };
 }
 
 void gfx_metal_unload_shader(ShaderProgram* old_prg) {
@@ -227,23 +253,149 @@ void gfx_metal_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms
     sTextures[sBoundTexture[tile]].sampler = smp;
 }
 
+// zmode values from gfx_opengl_set_depth_mode (ZMODE_OPA 0, INTER 1, XLU 2, DEC 3).
 void gfx_metal_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim,
                               uint16_t zmode) {
+    sDepthTest = depth_test;
+    sDepthUpdate = depth_update;
+    sDepthDecal = false;
+    if (!depth_compare) {
+        sDepthFunc = MTLCompareFunctionAlways;
+    } else if (zmode == 1 /* INTER */) {
+        sDepthFunc = MTLCompareFunctionLessEqual;
+    } else if (zmode == 3 /* DEC */) {
+        sDepthFunc = MTLCompareFunctionLessEqual;
+        sDepthDecal = true;
+    } else {
+        sDepthFunc = depth_source_prim ? MTLCompareFunctionLessEqual : MTLCompareFunctionLess;
+    }
 }
 
 void gfx_metal_set_depth_range(float znear, float zfar) {
+    sZNear = znear;
+    sZFar = zfar;
 }
 
 void gfx_metal_set_viewport(int x, int y, int width, int height) {
+    sVp[0] = x; sVp[1] = y; sVp[2] = width; sVp[3] = height;
 }
 
 void gfx_metal_set_scissor(int x, int y, int width, int height) {
+    sSc[0] = x; sSc[1] = y; sSc[2] = width; sSc[3] = height;
 }
 
 void gfx_metal_set_use_alpha(bool use_alpha, bool modulate) {
+    sUseAlpha = use_alpha;
+    sModulate = modulate;
+}
+
+id<MTLRenderPipelineState> pipeline_for(ShaderProgram* prg) {
+    const uint64_t key = ((uint64_t)(uintptr_t)prg << 2) | ((uint64_t)sUseAlpha << 1) | (uint64_t)sModulate;
+    __strong id<MTLRenderPipelineState>& ps = sPipelines[key];
+    if (!ps) {
+        MTLRenderPipelineDescriptor* d = [MTLRenderPipelineDescriptor new];
+        d.vertexFunction = prg->vertex_fn;
+        d.fragmentFunction = prg->fragment_fn;
+        d.colorAttachments[0].pixelFormat = sLayer.pixelFormat;
+        d.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+        if (sUseAlpha) {
+            MTLRenderPipelineColorAttachmentDescriptor* c = d.colorAttachments[0];
+            c.blendingEnabled = YES;
+            if (sModulate) { // GL_DST_COLOR, GL_ZERO
+                c.sourceRGBBlendFactor = c.sourceAlphaBlendFactor = MTLBlendFactorDestinationColor;
+                c.destinationRGBBlendFactor = c.destinationAlphaBlendFactor = MTLBlendFactorZero;
+            } else { // GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
+                c.sourceRGBBlendFactor = c.sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+                c.destinationRGBBlendFactor = c.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+            }
+        }
+        NSError* err = nil;
+        ps = [sDevice newRenderPipelineStateWithDescriptor:d error:&err];
+        if (!ps) {
+            sysLogPrintf(LOG_ERROR, "Metal: pipeline failed: %s", err.localizedDescription.UTF8String);
+        }
+    }
+    return ps;
+}
+
+id<MTLDepthStencilState> depth_state(void) {
+    const uint32_t key = (uint32_t)sDepthTest | ((uint32_t)sDepthUpdate << 1) | ((uint32_t)sDepthFunc << 2);
+    __strong id<MTLDepthStencilState>& ds = sDepthStates[key];
+    if (!ds) {
+        MTLDepthStencilDescriptor* d = [MTLDepthStencilDescriptor new];
+        // GL: with the depth test disabled nothing is tested or written.
+        d.depthCompareFunction = sDepthTest ? sDepthFunc : MTLCompareFunctionAlways;
+        d.depthWriteEnabled = sDepthTest && sDepthUpdate;
+        ds = [sDevice newDepthStencilStateWithDescriptor:d];
+    }
+    return ds;
+}
+
+void begin_pass(bool clear_color, bool clear_depth) {
+    if (sEnc) {
+        [sEnc endEncoding];
+        sEnc = nil;
+    }
+    if (!sDrawable) {
+        return;
+    }
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = sDrawable.texture;
+    pass.colorAttachments[0].loadAction = clear_color ? MTLLoadActionClear : MTLLoadActionLoad;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+    pass.depthAttachment.texture = sDepthTex;
+    pass.depthAttachment.loadAction = clear_depth ? MTLLoadActionClear : MTLLoadActionLoad;
+    pass.depthAttachment.storeAction = MTLStoreActionStore;
+    pass.depthAttachment.clearDepth = 1.0;
+    sEnc = [sCmd renderCommandEncoderWithDescriptor:pass];
 }
 
 void gfx_metal_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
+    ShaderProgram* prg = sCurrentShader;
+    if (!sEnc || !prg || !prg->vertex_fn || buf_vbo_num_tris == 0) {
+        sStatSkipped++;
+        return;
+    }
+    id<MTLRenderPipelineState> ps = pipeline_for(prg);
+    if (!ps) {
+        return;
+    }
+    const int fbw = (int)sDrawable.texture.width, fbh = (int)sDrawable.texture.height;
+    [sEnc setRenderPipelineState:ps];
+    [sEnc setDepthStencilState:depth_state()];
+    [sEnc setDepthBias:(sDepthDecal ? -2.0f : 0.0f) slopeScale:(sDepthDecal ? -2.0f : 0.0f) clamp:0.0f];
+    // Fast3D passes GL-style rectangles (origin bottom-left): flip to Metal's top-left origin.
+    [sEnc setViewport:(MTLViewport){ (double)sVp[0], (double)(fbh - sVp[1] - sVp[3]), (double)sVp[2], (double)sVp[3],
+                                     sZNear, sZFar }];
+    int sx = std::max(0, sSc[0]), sy = std::max(0, fbh - sSc[1] - sSc[3]);
+    int sw = std::min(sSc[2], fbw - sx), sh = std::min(sSc[3], fbh - sy);
+    if (sw <= 0 || sh <= 0) {
+        return;
+    }
+    [sEnc setScissorRect:(MTLScissorRect){ (NSUInteger)sx, (NSUInteger)sy, (NSUInteger)sw, (NSUInteger)sh }];
+
+    const size_t bytes = buf_vbo_len * sizeof(float);
+    if (bytes <= 4096) {
+        [sEnc setVertexBytes:buf_vbo length:bytes atIndex:0];
+    } else {
+        id<MTLBuffer> vb = [sDevice newBufferWithBytes:buf_vbo length:bytes options:MTLResourceStorageModeShared];
+        [sEnc setVertexBuffer:vb offset:0 atIndex:0];
+    }
+    FragUniforms u = { (int32_t)sFrameCount, sNoiseScale, sTileLinearFilter[0], sTileLinearFilter[1] };
+    [sEnc setFragmentBytes:&u length:sizeof(u) atIndex:0];
+    for (int i = 0; i < 2; i++) {
+        if (!prg->used_textures[i]) {
+            continue;
+        }
+        auto it = sTextures.find(sBoundTexture[i]);
+        const bool ok = it != sTextures.end() && it->second.tex;
+        [sEnc setFragmentTexture:(ok ? it->second.tex : sWhiteTex) atIndex:i];
+        [sEnc setFragmentSamplerState:((ok && it->second.sampler) ? it->second.sampler : sDefaultSampler) atIndex:i];
+    }
+    [sEnc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3 * buf_vbo_num_tris];
+    sStatDraws++;
+    sStatTris += (uint32_t)buf_vbo_num_tris;
 }
 
 void gfx_metal_init(void) {
@@ -260,6 +412,16 @@ void gfx_metal_init(void) {
     sLayer.framebufferOnly = YES;
     sQueue = [sDevice newCommandQueue];
     sFramebuffers.assign(1, FramebufferMtl{});
+    {
+        MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                     width:1
+                                                                                    height:1
+                                                                                 mipmapped:NO];
+        sWhiteTex = [sDevice newTextureWithDescriptor:d];
+        const uint32_t white = 0xffffffffu;
+        [sWhiteTex replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&white bytesPerRow:4];
+        sDefaultSampler = [sDevice newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+    }
     sysLogPrintf(LOG_NOTE, "Metal: device %s", sDevice.name.UTF8String);
 
     // Test aid: PD_METAL_SHADERTEST=N compiles N random combiner ids (both filter modes) at start-up.
@@ -298,25 +460,43 @@ void gfx_metal_on_resize(void) {
 }
 
 void gfx_metal_start_frame(void) {
+    sFrameCount++;
+    sDrawable = [sLayer nextDrawable];
+    if (!sDrawable) {
+        return;
+    }
+    const NSUInteger w = sDrawable.texture.width, h = sDrawable.texture.height;
+    if (!sDepthTex || sDepthTex.width != w || sDepthTex.height != h) {
+        MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                                                                     width:w
+                                                                                    height:h
+                                                                                 mipmapped:NO];
+        d.usage = MTLTextureUsageRenderTarget;
+        d.storageMode = MTLStorageModePrivate;
+        sDepthTex = [sDevice newTextureWithDescriptor:d];
+    }
+    sCmd = [sQueue commandBuffer];
+    begin_pass(true, true);
 }
 
 void gfx_metal_end_frame(void) {
-    @autoreleasepool {
-        id<CAMetalDrawable> drawable = [sLayer nextDrawable];
-        if (!drawable) {
-            return;
+    if (sEnc) {
+        [sEnc endEncoding];
+        sEnc = nil;
+    }
+    if (sCmd) {
+        if (sDrawable) {
+            [sCmd presentDrawable:sDrawable];
         }
-        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.colorAttachments[0].texture = drawable.texture;
-        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        // Skeleton marker colour (dark red): proves the Metal path presents frames.
-        pass.colorAttachments[0].clearColor = MTLClearColorMake(0.35, 0.0, 0.0, 1.0);
-        id<MTLCommandBuffer> cmd = [sQueue commandBuffer];
-        id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
-        [enc endEncoding];
-        [cmd presentDrawable:drawable];
-        [cmd commit];
+        [sCmd commit];
+    }
+    sCmd = nil;
+    sDrawable = nil;
+    static const bool stats = getenv("PD_METAL_STATS") != nullptr;
+    if (stats && sFrameCount % 60 == 0) {
+        sysLogPrintf(LOG_NOTE, "Metal stats: frame %u, last 60 frames: %u draws, %u tris, %u skipped, %zu shaders",
+                     sFrameCount, sStatDraws, sStatTris, sStatSkipped, sShaders.size());
+        sStatDraws = sStatTris = sStatSkipped = 0;
     }
 }
 
@@ -343,13 +523,19 @@ void gfx_metal_update_framebuffer_parameters(int fb_id, uint32_t width, uint32_t
 }
 
 bool gfx_metal_start_draw_to_framebuffer(int fb_id, float noise_scale) {
-    return true;
+    if (noise_scale != 0.0f) {
+        sNoiseScale = 1.0f / noise_scale;
+    }
+    return fb_id == 0; // M6: offscreen framebuffers
 }
 
 void gfx_metal_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool flip_y, bool use_back) {
 }
 
 void gfx_metal_clear_framebuffer(bool clear_color, bool clear_depth) {
+    if (sCmd && (clear_color || clear_depth)) {
+        begin_pass(clear_color, clear_depth); // a Metal clear = a new pass with LoadActionClear
+    }
 }
 
 void gfx_metal_resolve_msaa_color_buffer(int fb_id_target, int fb_id_source) {

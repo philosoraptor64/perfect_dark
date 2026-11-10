@@ -117,12 +117,17 @@ Steps:
       RGBA8Unorm shared textures, re-created on size/mip change; mipmaps (gen_mipmaps or three-point, as GL) via a
       blit command buffer; sampler states cached by (min/mag linear, mip mode, S/T address mode, anisotropy);
       filter table = gfx_opengl_set_sampler_parameters. Not visible yet (nothing draws). Boots, no errors.
-- [ ] M4b. (next) Draw: render pass + encoder per frame on the drawable (start_frame), pipeline cache
-      (M3b), vertex data via setVertexBytes (<4 KB) or a per-frame ring buffer, FragUniforms, bind
-      textures/samplers per used_textures, viewport/scissor (note PD passes GL-style bottom-left coords),
-      draw_triangles. First visible result. Until M6, draw everything straight to the screen (treat any
-      start_draw_to_framebuffer as fb 0), or set Video.FramebufferEffects off if that exists.
-- [ ] M4 (rest). Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
+- [x] M4b. Draw (2026-11-10): **first Metal pixels: the N64 logo intro renders like OpenGL** (window captures
+      compared). start_frame takes the drawable, makes a Depth32Float depth texture and begins a pass
+      (clear colour+depth); clear_framebuffer = end the encoder and begin a new pass with LoadActionClear;
+      pipelines cached by (shader, use_alpha, modulate), blend = GL's (SRC_ALPHA, 1-SRC_ALPHA) or modulate
+      (DST_COLOR, ZERO); depth-stencil states cached; zmode DEC = LessEqual + depth bias (-2, -2: tune vs GL's
+      polygon offset); viewport/scissor flipped from GL bottom-left; vertices via setVertexBytes (<= 4 KB) or a
+      new MTLBuffer per draw (TODO: per-frame ring buffer); 1x1 white texture/default sampler if a texture is missing.
+      get_clip_parameters = {z 0..1, no y flip}. video.c turns `gfx_framebuffers_enabled` off and MSAA to 1 for Metal
+      until M6. Runs clean under `MTL_DEBUG_LAYER=1`. `PD_METAL_STATS=1` logs draws/tris/skipped per 60 frames.
+      Window-only screenshots: a tiny Swift CGWindowList tool for the window id, then `screencapture -x -o -l <id>`.
+- [ ] M4c. (next) Play through menus/levels on Metal vs OpenGL and fix differences; vertex ring buffer. (Original M4 text: Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
       (Visible result: the game renders.)
 - [ ] M5. Depth modes (decal/zmode, prim depth), depth range, scissor/viewport, alpha/blend.
 - [ ] M6. Framebuffers: create/update/copy/clear, MSAA resolve, fb textures (blur, motion effects,

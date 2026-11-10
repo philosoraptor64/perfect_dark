@@ -98,6 +98,13 @@ s32 videoInit(void)
 	gfx_framebuffers_enabled = (bool)vidFramebuffers;
 	gfx_detail_textures_enabled = (bool)texDetail;
 	gfx_msaa_level = vidMSAA;
+#ifdef __APPLE__
+	if (gfx_sdl_use_metal) {
+		// Metal backend WIP: offscreen framebuffers and MSAA arrive in plan step M6.
+		gfx_framebuffers_enabled = false;
+		gfx_msaa_level = 1;
+	}
+#endif
 
 	struct GfxInitSettings set = {
 		.wapi = wmAPI,
