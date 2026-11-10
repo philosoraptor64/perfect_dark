@@ -83,9 +83,16 @@ Interface differences, PD (C function table) vs LUS `GfxRenderingAPIMetal` (C++ 
   GLSL generator in gfx_opengl.cpp handles (port its GLSL generation to MSL rather than reuse LUS's template).
 
 Steps:
-- [ ] M1. Window: `gfx_sdl2.cpp` creates a Metal window (`SDL_WINDOW_METAL`, `SDL_Metal_CreateView`,
-      CAMetalLayer) when the renderer is Metal; config `Video.Renderer` (opengl|metal), default opengl.
-- [ ] M2. `port/fast3d/gfx_metal.mm` skeleton: device/queue/layer, clear the screen each frame, all other
+- [x] M1. Window (2026-11-10): `gfx_sdl2.cpp` has `bool gfx_sdl_use_metal` (default false): when true it
+      creates an `SDL_WINDOW_METAL` window + `SDL_Metal_CreateView` (no GL context; falls back to GL if that
+      fails), drawable size via `SDL_Metal_GetDrawableSize`, no `SDL_GL_SwapWindow` (the backend presents),
+      swap interval only recorded (`vsync_enabled`; the backend must apply it to the layer).
+      `extern "C" void* gfx_sdl_get_metal_layer(void)` returns the CAMetalLayer for the backend.
+      Nothing sets the flag yet: OpenGL is unchanged (verified boot). Wiring the selection is part of M2.
+- [ ] M2. Config `Video.Renderer` (0 = OpenGL default, 1 = Metal) in `port/src/video.c` (configRegisterInt
+      next to Video.DefaultFullscreen): set `gfx_sdl_use_metal` before `wmAPI->init` and pick `gfx_metal_api`;
+      CMake: add the .mm on APPLE (enable OBJCXX, link Metal + QuartzCore, -fobjc-arc). Then
+      `port/fast3d/gfx_metal.mm` skeleton: device/queue/layer, clear the screen each frame, all other
       functions stubbed; selectable on the Mac. (Visible result: black/coloured window, no crash.)
 - [ ] M3. Shaders: MSL generator ported from gfx_opengl.cpp's GLSL generator (same CCFeatures), pipeline
       cache keyed by shader id + blend/depth state.

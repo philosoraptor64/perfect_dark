@@ -11,6 +11,39 @@
 
 static SDL_Window* wnd;
 static SDL_GLContext ctx;
+// Metal path (see docs/netplay-notes.md, Metal plan M1): the backend presents through
+// the CAMetalLayer of this view; no GL context exists.
+bool gfx_sdl_use_metal = false;
+static SDL_MetalView metal_view;
+extern "C" void* gfx_sdl_get_metal_layer(void) {
+    return metal_view ? SDL_Metal_GetLayer(metal_view) : nullptr;
+}
+
+static void get_drawable_size(int* w, int* h) {
+    if (gfx_sdl_use_metal) {
+        SDL_Metal_GetDrawableSize(wnd, w, h);
+    } else {
+        SDL_GL_GetDrawableSize(wnd, w, h);
+    }
+}
+
+static bool init_metal_window(const char* title, int posX, int posY, int w, int h, Uint32 flags) {
+    flags = (flags & ~SDL_WINDOW_OPENGL) | SDL_WINDOW_METAL;
+    wnd = SDL_CreateWindow(title, posX, posY, w, h, flags);
+    if (!wnd) {
+        sysLogPrintf(LOG_WARNING, "SDL: could not open Metal window: %s", SDL_GetError());
+        return false;
+    }
+    metal_view = SDL_Metal_CreateView(wnd);
+    if (!metal_view) {
+        sysLogPrintf(LOG_WARNING, "SDL: could not create Metal view: %s", SDL_GetError());
+        SDL_DestroyWindow(wnd);
+        wnd = nullptr;
+        return false;
+    }
+    sysLogPrintf(LOG_NOTE, "SDL: created Metal window");
+    return true;
+}
 static SDL_Renderer* renderer;
 static int sdl_to_lus_table[512];
 static bool vsync_enabled = true;
@@ -142,6 +175,16 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         flags |= SDL_WINDOW_ALLOW_HIGHDPI;
     }
 #endif
+
+    if (gfx_sdl_use_metal) {
+        if (init_metal_window(set->title, posX, posY, window_width, window_height, flags)) {
+            SDL_ShowWindow(wnd);
+            qpc_freq = SDL_GetPerformanceFrequency();
+            return;
+        }
+        sysLogPrintf(LOG_WARNING, "SDL: Metal unavailable, falling back to OpenGL");
+        gfx_sdl_use_metal = false;
+    }
 
     // ideally we need 3.0 compat
     // if that doesn't work, try 3.2 core in case we're on mac, 2.1 compat as a last resort
@@ -284,7 +327,7 @@ static void gfx_sdl_set_dimensions(uint32_t width, uint32_t height, int32_t posX
 }
 
 static void gfx_sdl_get_dimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY) {
-    SDL_GL_GetDrawableSize(wnd, static_cast<int*>((void*)width), static_cast<int*>((void*)height));
+    get_drawable_size(static_cast<int*>((void*)width), static_cast<int*>((void*)height));
     SDL_GetWindowPosition(wnd, static_cast<int*>(posX), static_cast<int*>(posY));
 }
 
@@ -300,7 +343,7 @@ static void gfx_sdl_handle_events(void) {
                 break;
             case SDL_WINDOWEVENT:
                 if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                    SDL_GL_GetDrawableSize(wnd, &window_width, &window_height);
+                    get_drawable_size(&window_width, &window_height);
                     if (!fullscreen_state) {
                         maximized_state = SDL_GetWindowFlags(wnd) & SDL_WINDOW_MAXIMIZED ? true : false;
                     }
@@ -357,7 +400,9 @@ static void gfx_sdl_swap_buffers_begin(void) {
     if (target_fps) {
         sync_framerate_with_timer();
     }
-    SDL_GL_SwapWindow(wnd);
+    if (!gfx_sdl_use_metal) {
+        SDL_GL_SwapWindow(wnd); // Metal: the backend presents its drawable in end_frame
+    }
 }
 
 static void gfx_sdl_swap_buffers_end(void) {
@@ -389,10 +434,17 @@ static void gfx_sdl_set_window_title(const char *title) {
 }
 
 static int gfx_sdl_get_swap_interval(void) {
+    if (gfx_sdl_use_metal) {
+        return vsync_enabled ? 1 : 0; // the Metal backend applies it to the layer
+    }
     return SDL_GL_GetSwapInterval();
 }
 
 static bool gfx_sdl_set_swap_interval(int interval) {
+    if (gfx_sdl_use_metal) {
+        vsync_enabled = (interval != 0);
+        return true;
+    }
     const bool success = SDL_GL_SetSwapInterval(interval) >= 0;
     vsync_enabled = success && (interval != 0);
     if (!success) {
