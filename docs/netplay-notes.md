@@ -112,7 +112,17 @@ Steps:
       `set_texture_filter` must clear the shader cache when the mode changes (check what gfx_pc does).
 - [ ] M3b. (next) Pipeline states: cache keyed by (shader, use_alpha/blend, depth test/write/decal, MSAA sample
       count, colour format), built lazily in draw_triangles. Can be merged with M4.
-- [ ] M4. Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
+- [x] M4a. Textures + samplers (2026-11-10): GL semantics kept (select_texture/set_sampler_parameters set the
+      active tile; upload and sampler apply to the texture bound there; sampler state stored per texture).
+      RGBA8Unorm shared textures, re-created on size/mip change; mipmaps (gen_mipmaps or three-point, as GL) via a
+      blit command buffer; sampler states cached by (min/mag linear, mip mode, S/T address mode, anisotropy);
+      filter table = gfx_opengl_set_sampler_parameters. Not visible yet (nothing draws). Boots, no errors.
+- [ ] M4b. (next) Draw: render pass + encoder per frame on the drawable (start_frame), pipeline cache
+      (M3b), vertex data via setVertexBytes (<4 KB) or a per-frame ring buffer, FragUniforms, bind
+      textures/samplers per used_textures, viewport/scissor (note PD passes GL-style bottom-left coords),
+      draw_triangles. First visible result. Until M6, draw everything straight to the screen (treat any
+      start_draw_to_framebuffer as fb 0), or set Video.FramebufferEffects off if that exists.
+- [ ] M4 (rest). Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
       (Visible result: the game renders.)
 - [ ] M5. Depth modes (decal/zmode, prim depth), depth range, scissor/viewport, alpha/blend.
 - [ ] M6. Framebuffers: create/update/copy/clear, MSAA resolve, fb textures (blur, motion effects,

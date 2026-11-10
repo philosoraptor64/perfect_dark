@@ -11,6 +11,8 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <map>
+#include <unordered_map>
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -46,6 +48,17 @@ struct FramebufferMtl {
     bool has_depth = false;
 };
 
+// N64 texture-coordinate modes (gbi.h): G_TX_MIRROR = 1, G_TX_CLAMP = 2.
+constexpr uint32_t kTxMirror = 1;
+constexpr uint32_t kTxClamp = 2;
+
+// GL semantics: sampler state belongs to the texture object; upload/sampler calls act on the
+// texture bound to the active tile.
+struct TextureMtl {
+    id<MTLTexture> tex;
+    id<MTLSamplerState> sampler;
+};
+
 id<MTLDevice> sDevice;
 id<MTLCommandQueue> sQueue;
 CAMetalLayer* sLayer;
@@ -53,6 +66,11 @@ CAMetalLayer* sLayer;
 std::map<std::pair<uint64_t, uint32_t>, ShaderProgram> sShaders;
 ShaderProgram* sCurrentShader;
 uint32_t sNextTextureId = 1;
+std::unordered_map<uint32_t, TextureMtl> sTextures;
+std::unordered_map<uint64_t, id<MTLSamplerState>> sSamplerCache;
+uint32_t sBoundTexture[2];
+bool sTileLinearFilter[2];
+int sActiveTile;
 std::vector<FramebufferMtl> sFramebuffers; // index 0 = the screen
 FilteringMode sTextureFilter = FILTER_THREE_POINT;
 MipmapFilteringMode sMipmapFilter = MIPMAP_DISABLED;
@@ -142,12 +160,71 @@ uint32_t gfx_metal_new_texture(void) {
 }
 
 void gfx_metal_select_texture(int tile, uint32_t texture_id, bool linear_filter) {
+    sActiveTile = tile;
+    sBoundTexture[tile] = texture_id;
+    sTileLinearFilter[tile] = linear_filter;
 }
 
 void gfx_metal_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height, bool gen_mipmaps) {
+    TextureMtl& t = sTextures[sBoundTexture[sActiveTile]];
+    const bool mips = gen_mipmaps || sTextureFilter == FILTER_THREE_POINT; // same rule as the GL backend
+    if (!t.tex || t.tex.width != width || t.tex.height != height || (t.tex.mipmapLevelCount > 1) != mips) {
+        MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                     width:width
+                                                                                    height:height
+                                                                                 mipmapped:mips];
+        d.usage = MTLTextureUsageShaderRead;
+        d.storageMode = MTLStorageModeShared;
+        t.tex = [sDevice newTextureWithDescriptor:d];
+    }
+    [t.tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rgba32_buf bytesPerRow:width * 4];
+    if (mips && t.tex.mipmapLevelCount > 1) {
+        id<MTLCommandBuffer> cmd = [sQueue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+        [blit generateMipmapsForTexture:t.tex];
+        [blit endEncoding];
+        [cmd commit];
+    }
 }
 
-void gfx_metal_set_sampler_parameters(int sampler, bool linear_filter, uint32_t cms, uint32_t cmt, bool mipmaps) {
+MTLSamplerAddressMode address_mode(uint32_t cm) {
+    switch (cm & (kTxMirror | kTxClamp)) {
+        case kTxClamp:
+            return MTLSamplerAddressModeClampToEdge;
+        case kTxMirror:
+            return MTLSamplerAddressModeMirrorRepeat;
+        case kTxMirror | kTxClamp:
+            return MTLSamplerAddressModeMirrorClampToEdge;
+        default:
+            return MTLSamplerAddressModeRepeat;
+    }
+}
+
+void gfx_metal_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt, bool mipmaps) {
+    sActiveTile = tile;
+    // Mirrors gfx_opengl_set_sampler_parameters' filter table.
+    mipmaps = mipmaps && sMipmapFilter != MIPMAP_DISABLED;
+    const bool three_point = sTextureFilter == FILTER_THREE_POINT;
+    const bool min_linear = linear_filter && sTextureFilter == FILTER_LINEAR;
+    const bool mag_linear = linear_filter && sTextureFilter == FILTER_LINEAR;
+    const int mip = (!mipmaps || three_point || !linear_filter) ? 0 : (int)sMipmapFilter; // 0 none, 1 nearest, 2 linear
+    const int aniso = mipmaps ? std::max(1, std::min(16, sAnisotropy)) : 1;
+    const uint64_t key = (uint64_t)min_linear | ((uint64_t)mag_linear << 1) | ((uint64_t)mip << 2) |
+                         ((uint64_t)address_mode(cms) << 4) | ((uint64_t)address_mode(cmt) << 8) |
+                         ((uint64_t)aniso << 12);
+    __strong id<MTLSamplerState>& smp = sSamplerCache[key];
+    if (!smp) {
+        MTLSamplerDescriptor* d = [MTLSamplerDescriptor new];
+        d.minFilter = min_linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+        d.magFilter = mag_linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+        d.mipFilter = mip == 0 ? MTLSamplerMipFilterNotMipmapped
+                               : (mip == 1 ? MTLSamplerMipFilterNearest : MTLSamplerMipFilterLinear);
+        d.sAddressMode = address_mode(cms);
+        d.tAddressMode = address_mode(cmt);
+        d.maxAnisotropy = aniso;
+        smp = [sDevice newSamplerStateWithDescriptor:d];
+    }
+    sTextures[sBoundTexture[tile]].sampler = smp;
 }
 
 void gfx_metal_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim,
@@ -286,6 +363,7 @@ void gfx_metal_select_texture_fb(int fb_id) {
 }
 
 void gfx_metal_delete_texture(uint32_t texID) {
+    sTextures.erase(texID);
 }
 
 void gfx_metal_set_texture_filter(FilteringMode mode) {
