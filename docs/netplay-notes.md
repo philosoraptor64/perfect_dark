@@ -35,11 +35,63 @@ code and what had to be synced.
    (value looks unused off-N64, verify). `src/game/weather.c` and `pak.c` read it for timing/profiling.
 4. **FP:** Release builds use `-Og` (upstream's workaround for -O2 issues) plus now `-ffp-contract=off`.
    Trig comes from the system libm: fine Mac <-> iPhone, a risk vs. PC.
-5. Graphics is OpenGL only: iOS needs a GLES 3 path (SDL + GLES) or ANGLE; check before investing.
+5. Graphics is OpenGL only: see "iPhone build" below.
 
 ## Next steps
 1. Human check on the Mac: picture, sound, controller, play a level and Combat Simulator.
 2. Fixed-step mode + seeded RNG behind an env var, then a replay check like
    SpaghettiKart's `src/port/ReplayCheck.{c,h}`: start Combat Sim with fixed settings, record P1
    input, hash the sim state per tick (players/props/chrs + both RNG seeds), 3 runs byte-identical.
-3. iOS build feasibility (GLES), then n64net input exchange (2 players, Combat Sim), then rollback.
+3. iPhone build (see below), then n64net input exchange (2 players, Combat Sim), then rollback.
+
+## iPhone build: scope (2026-11-10)
+The renderer is Fast3D (`port/fast3d/`): `gfx_pc.cpp` (RDP emulation, ~2800 lines) drives a backend
+through `struct GfxRenderingAPI` (38 function pointers, `gfx_rendering_api.h`); the only backend is
+`gfx_opengl.cpp` (~1300 lines, already supports GLES via its `gl_es` flag, used by the Switch build);
+the window/context is `gfx_sdl2.cpp` (`SDL_WINDOW_OPENGL` + GL context); `port/src/video.c` picks
+`gfx_opengl_api` + `gfx_sdl`. The iOS 27.2 SDK still ships OpenGLES.framework (deprecated since iOS 12).
+
+Three routes:
+1. **OpenGL ES 3 (fastest, ~1 session):** iOS CMake toolchain, SDL asks for an ES 3.0 context, data/save
+   dirs -> Documents, our UIScene-patched SDL (from i64 deps), Info.plist (controllers, local network).
+   Risk: Apple may remove GLES; runs through Apple's GL-on-Metal layer.
+2. **ANGLE (GLES on Metal, ~1-2 sessions):** same code, link ANGLE; big dependency.
+3. **Native Metal backend (~2-4 sessions) — CHOSEN by the user (2026-11-10).** Long-term answer: speed,
+   battery, no deprecated API, same backend family as our libultraship games (i64 should share one
+   Metal renderer). Source to adapt: libultraship's `src/fast/backends/gfx_metal.cpp` (~1300 lines,
+   our forks have the macOS 27 address-space fix and the SetColorWriteMask fix).
+
+Needed for every route: touch controls don't exist (Bluetooth controller first), ROM goes in Documents
+(the port reads it at runtime, no extraction), iOS background pause + frame pacing (as in our other
+ports). Becoming an i64 module is separate work (this port doesn't use libultraship).
+
+## Metal backend plan (route 3), small steps; push + update this file after each
+Interface differences, PD (C function table) vs LUS `GfxRenderingAPIMetal` (C++ class):
+- Same in spirit: get_name, max texture size, clip params, shader load/unload/create/lookup/get_info/
+  clear, new/select/upload/delete texture, sampler params, viewport, scissor, draw_triangles, init,
+  on_resize, start/end frame, finish_render, framebuffers (create, start draw, clear, resolve MSAA,
+  texture id, select fb texture), texture filter get/set.
+- PD only: `set_depth_mode(test, update, compare, source_prim, zmode)` (LUS splits it into
+  SetDepthTestAndMask + SetZmodeDecal + SetCurrentPrimDepth), `set_depth_range`, `set_use_alpha(use, modulate)`,
+  `update_framebuffer_parameters(... opengl_invert_y, render_target, has_depth, can_extract_depth)`,
+  `copy_framebuffer(dst, src, left, top, flip_y, use_back)`, `select_texture(tile, id, linear_filter)`,
+  `upload_texture(..., gen_mipmaps)`, sampler `mipmaps`, `set_mipmap_filter`, anisotropy get/set.
+- LUS only (not needed): ReadFramebufferToCPU, GetPixelDepth, GetTextureById (ImGui).
+- Shader ids: PD `(u64, u32)`, LUS `(u64, u64)`. PD's `CCFeatures` has extra options
+  (opt_texture_edge, opt_noise, opt_2cyc, opt_alpha_threshold, opt_invisible, opt_grayscale, **opt_blur**,
+  do_single/do_multiply/do_mix, color_alpha_same): the Metal shader generator must cover every option the
+  GLSL generator in gfx_opengl.cpp handles (port its GLSL generation to MSL rather than reuse LUS's template).
+
+Steps:
+- [ ] M1. Window: `gfx_sdl2.cpp` creates a Metal window (`SDL_WINDOW_METAL`, `SDL_Metal_CreateView`,
+      CAMetalLayer) when the renderer is Metal; config `Video.Renderer` (opengl|metal), default opengl.
+- [ ] M2. `port/fast3d/gfx_metal.mm` skeleton: device/queue/layer, clear the screen each frame, all other
+      functions stubbed; selectable on the Mac. (Visible result: black/coloured window, no crash.)
+- [ ] M3. Shaders: MSL generator ported from gfx_opengl.cpp's GLSL generator (same CCFeatures), pipeline
+      cache keyed by shader id + blend/depth state.
+- [ ] M4. Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
+      (Visible result: the game renders.)
+- [ ] M5. Depth modes (decal/zmode, prim depth), depth range, scissor/viewport, alpha/blend.
+- [ ] M6. Framebuffers: create/update/copy/clear, MSAA resolve, fb textures (blur, motion effects,
+      the PD-specific copy_framebuffer users). A/B screenshots vs OpenGL on the Mac for parity.
+- [ ] M7. iOS target: toolchain, UIScene SDL, Documents paths, Info.plist, controller; install on a phone.
