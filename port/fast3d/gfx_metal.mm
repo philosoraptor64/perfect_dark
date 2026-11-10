@@ -30,6 +30,10 @@ struct ShaderProgram {
     uint32_t shader_id1;
     uint8_t num_inputs;
     bool used_textures[2];
+    size_t num_floats;
+    bool three_point;
+    id<MTLFunction> vertex_fn;   // nil if the MSL failed to compile
+    id<MTLFunction> fragment_fn;
 };
 
 namespace {
@@ -52,6 +56,8 @@ uint32_t sNextTextureId = 1;
 std::vector<FramebufferMtl> sFramebuffers; // index 0 = the screen
 FilteringMode sTextureFilter = FILTER_THREE_POINT;
 MipmapFilteringMode sMipmapFilter = MIPMAP_DISABLED;
+int sShadersCompiled;
+int sShadersFailed;
 int sAnisotropy = 1;
 
 const char* gfx_metal_get_name(void) {
@@ -86,7 +92,31 @@ ShaderProgram* gfx_metal_create_and_load_new_shader(uint64_t shader_id0, uint32_
     prg.num_inputs = cc.num_inputs;
     prg.used_textures[0] = cc.used_textures[0];
     prg.used_textures[1] = cc.used_textures[1];
-    // M3: generate MSL from cc and build the pipeline state here.
+    prg.three_point = (sTextureFilter == FILTER_THREE_POINT);
+    const std::string src = gfx_metal_generate_msl(cc, prg.three_point, &prg.num_floats);
+    @autoreleasepool {
+        NSError* err = nil;
+        MTLCompileOptions* opts = [MTLCompileOptions new];
+        if (@available(macOS 15.0, iOS 18.0, *)) {
+            opts.mathMode = MTLMathModeSafe; // like GLSL without fast-math: keep the combiner math exact
+        } else {
+            opts.fastMathEnabled = NO;
+        }
+        id<MTLLibrary> lib = [sDevice newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()]
+                                                   options:opts
+                                                     error:&err];
+        prg.vertex_fn = lib ? [lib newFunctionWithName:@"vertexMain"] : nil;
+        prg.fragment_fn = lib ? [lib newFunctionWithName:@"fragmentMain"] : nil;
+        if (!prg.vertex_fn || !prg.fragment_fn) {
+            if (sShadersFailed++ < 3) {
+                sysLogPrintf(LOG_ERROR, "Metal: shader %016llx/%08x failed to compile:\n%s\n--- source ---\n%s",
+                             (unsigned long long)shader_id0, shader_id1,
+                             err ? err.localizedDescription.UTF8String : "(no error)", src.c_str());
+            }
+        } else if (++sShadersCompiled % 25 == 1) {
+            sysLogPrintf(LOG_NOTE, "Metal: %d shaders compiled, %d failed", sShadersCompiled, sShadersFailed);
+        }
+    }
     sCurrentShader = &prg;
     return &prg;
 }
@@ -154,6 +184,37 @@ void gfx_metal_init(void) {
     sQueue = [sDevice newCommandQueue];
     sFramebuffers.assign(1, FramebufferMtl{});
     sysLogPrintf(LOG_NOTE, "Metal: device %s", sDevice.name.UTF8String);
+
+    // Test aid: PD_METAL_SHADERTEST=N compiles N random combiner ids (both filter modes) at start-up.
+    if (const char* n = getenv("PD_METAL_SHADERTEST")) {
+        uint64_t x = 0x9E3779B97F4A7C15ull;
+        auto next = [&x]() { x ^= x << 13; x ^= x >> 7; x ^= x << 17; return x; };
+        const int count = atoi(n);
+        for (int i = 0; i < count; i++) {
+            const uint64_t id0 = next();
+            const uint32_t id1 = (uint32_t)next();
+            CCFeatures cc;
+            gfx_cc_get_features(id0, id1, &cc);
+            bool valid = true; // random ids can encode combiner inputs that don't exist: skip those
+            for (int a = 0; a < 2; a++)
+                for (int b = 0; b < 2; b++)
+                    for (int k = 0; k < 4; k++)
+                        valid &= cc.c[a][b][k] <= SHADER_NOISE &&
+                                 !(cc.c[a][b][k] >= SHADER_INPUT_5 && cc.c[a][b][k] <= SHADER_INPUT_7) &&
+                                 !(cc.c[a][b][k] >= SHADER_INPUT_1 && cc.c[a][b][k] <= SHADER_INPUT_7 &&
+                                   cc.c[a][b][k] - SHADER_INPUT_1 >= cc.num_inputs);
+            if (!valid) {
+                i--;
+                continue;
+            }
+            sTextureFilter = (i & 1) ? FILTER_THREE_POINT : FILTER_LINEAR;
+            gfx_metal_create_and_load_new_shader(id0, id1);
+        }
+        sysLogPrintf(LOG_NOTE, "Metal: shader test done: %d compiled, %d failed", sShadersCompiled, sShadersFailed);
+        sShaders.clear();
+        sCurrentShader = nullptr;
+        sTextureFilter = FILTER_THREE_POINT;
+    }
 }
 
 void gfx_metal_on_resize(void) {

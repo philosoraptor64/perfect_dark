@@ -100,8 +100,18 @@ Steps:
       and runs the game loop without crashing. **User to confirm** the window is solid dark red
       (`cd build && PD_RENDERER=metal ./pd.arm64`). Note: if the Metal window can't be created, SDL falls
       back to GL but the Metal backend is still selected -> fatal "no CAMetalLayer" (fine for now).
-- [ ] M3. (next) Shaders: MSL generator ported from gfx_opengl.cpp's GLSL generator (same CCFeatures), pipeline
-      cache keyed by shader id + blend/depth state.
+- [x] M3a. MSL generator (2026-11-10): `port/fast3d/gfx_metal_shader.cpp` `gfx_metal_generate_msl(cc, three_point,
+      &num_floats)` = line-by-line port of the GLSL generator (aliases vec2/3/4 = float2/3/4 and a floored GLSL `mod`,
+      so the combiner expressions are identical; KEEP BOTH IN SYNC). Vertex shader reads the same interleaved floats
+      by vertex_id from buffer(0) (no vertex descriptor); fragment: uTex0/1 = texture/sampler 0/1, buffer(0) =
+      `FragUniforms {frame_count, noise_scale, three_point_filter0/1}`. `create_and_load_new_shader` compiles it
+      (MTLMathModeSafe) into ShaderProgram.vertex_fn/fragment_fn and logs failures with the source.
+      Test: `PD_RENDERER=metal PD_METAL_SHADERTEST=300 ./pd.arm64` compiles 300 random valid combiners (half
+      three-point): **300 compiled, 0 failed** (random ids must skip items > SHADER_NOISE and INPUT_5..7: the GL
+      generator doesn't handle those either). The three-point choice is baked in at creation (as in GL):
+      `set_texture_filter` must clear the shader cache when the mode changes (check what gfx_pc does).
+- [ ] M3b. (next) Pipeline states: cache keyed by (shader, use_alpha/blend, depth test/write/decal, MSAA sample
+      count, colour format), built lazily in draw_triangles. Can be merged with M4.
 - [ ] M4. Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
       (Visible result: the game renders.)
 - [ ] M5. Depth modes (decal/zmode, prim depth), depth range, scissor/viewport, alpha/blend.
