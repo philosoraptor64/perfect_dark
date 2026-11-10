@@ -12,6 +12,7 @@
 #include "../fast3d/gfx_api.h"
 #include "../fast3d/gfx_sdl.h"
 #include "../fast3d/gfx_opengl.h"
+#include "../fast3d/gfx_metal.h"
 
 #ifdef PLATFORM_NSWITCH
 #define DEFAULT_VID_WIDTH 1280
@@ -33,6 +34,11 @@ static bool initDone = false;
 static s32 vidWidth = DEFAULT_VID_WIDTH;
 static s32 vidHeight = DEFAULT_VID_HEIGHT;
 static s32 vidFramebuffers = true;
+// 0 = OpenGL, 1 = Metal (Apple only; work in progress, see docs/netplay-notes.md)
+static s32 vidRenderer = 0;
+#ifdef __APPLE__
+extern bool gfx_sdl_use_metal;
+#endif
 static s32 vidFullscreen = DEFAULT_VID_FULLSCREEN;
 static s32 vidFullscreenExclusive = DEFAULT_VID_FULLSCREEN_EXCLUSIVE;
 static s32 vidMaximize = false;
@@ -73,6 +79,18 @@ s32 videoInit(void)
 {
 	wmAPI = &gfx_sdl;
 	renderingAPI = &gfx_opengl_api;
+#ifdef __APPLE__
+	{
+		const char *env = getenv("PD_RENDERER");
+		if (env && *env) {
+			vidRenderer = (strcmp(env, "metal") == 0) ? 1 : 0;
+		}
+	}
+	gfx_sdl_use_metal = (vidRenderer == 1);
+	if (gfx_sdl_use_metal) {
+		renderingAPI = &gfx_metal_api;
+	}
+#endif
 
 	gfx_current_native_viewport.width = 320;
 	gfx_current_native_viewport.height = 220;
@@ -565,6 +583,7 @@ void videoShutdown(void)
 
 PD_CONSTRUCTOR static void videoConfigInit(void)
 {
+	configRegisterInt("Video.Renderer", &vidRenderer, 0, 1);
 	configRegisterInt("Video.DefaultFullscreen", &vidFullscreen, 0, 1);
 	configRegisterInt("Video.DefaultMaximize", &vidMaximize, 0, 1);
 	configRegisterInt("Video.DefaultWidth", &vidWidth, 0, 32767);

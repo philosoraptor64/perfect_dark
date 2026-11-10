@@ -12,6 +12,9 @@ if(APPLE)
 endif()
 
 project(pd C CXX)
+if(APPLE)
+  enable_language(OBJCXX) # port/fast3d/gfx_metal.mm
+endif()
 
 include(TargetArch)
 include(FindPkgConfig)
@@ -265,6 +268,11 @@ list(APPEND LIBS "${EXTRA_LIBRARIES}")
 
 file(GLOB_RECURSE SRC_PORT "${CMAKE_SOURCE_DIR}/port/*.c")
 file(GLOB_RECURSE SRC_PORT_CXX "${CMAKE_SOURCE_DIR}/port/*.cpp")
+if(APPLE)
+  file(GLOB_RECURSE SRC_PORT_OBJCXX "${CMAKE_SOURCE_DIR}/port/*.mm")
+  list(APPEND SRC_PORT_CXX ${SRC_PORT_OBJCXX})
+  set_source_files_properties(${SRC_PORT_OBJCXX} PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
 
 file(GLOB_RECURSE SRC_GAME "${CMAKE_SOURCE_DIR}/src/game/*.c")
 
@@ -350,6 +358,9 @@ set(BIN_NAME "pd${BIN_REGION}.${TARGET_ARCH}")
 add_executable(pd ${SRC})
 add_dependencies(pd pd_headers)
 target_link_libraries(pd ${LIBS})
+if(APPLE)
+  target_link_libraries(pd "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+endif()
 set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
 if(WIN32)
   set_target_properties(pd PROPERTIES WIN32_EXECUTABLE TRUE)

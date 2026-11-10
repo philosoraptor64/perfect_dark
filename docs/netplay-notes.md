@@ -89,12 +89,18 @@ Steps:
       swap interval only recorded (`vsync_enabled`; the backend must apply it to the layer).
       `extern "C" void* gfx_sdl_get_metal_layer(void)` returns the CAMetalLayer for the backend.
       Nothing sets the flag yet: OpenGL is unchanged (verified boot). Wiring the selection is part of M2.
-- [ ] M2. Config `Video.Renderer` (0 = OpenGL default, 1 = Metal) in `port/src/video.c` (configRegisterInt
-      next to Video.DefaultFullscreen): set `gfx_sdl_use_metal` before `wmAPI->init` and pick `gfx_metal_api`;
-      CMake: add the .mm on APPLE (enable OBJCXX, link Metal + QuartzCore, -fobjc-arc). Then
-      `port/fast3d/gfx_metal.mm` skeleton: device/queue/layer, clear the screen each frame, all other
-      functions stubbed; selectable on the Mac. (Visible result: black/coloured window, no crash.)
-- [ ] M3. Shaders: MSL generator ported from gfx_opengl.cpp's GLSL generator (same CCFeatures), pipeline
+- [x] M2. Skeleton (2026-11-10): `Video.Renderer` in pd.ini (0 = OpenGL default, 1 = Metal) or env
+      `PD_RENDERER=metal|opengl` (overrides, for tests); `port/src/video.c` sets `gfx_sdl_use_metal` and picks
+      `gfx_metal_api` (Apple only). `port/fast3d/gfx_metal.{h,mm}`: device/queue from the SDL CAMetalLayer
+      (BGRA8, framebufferOnly), `end_frame` clears the drawable to dark red and presents; shaders are
+      bookkeeping only (ShaderProgram = ids + num_inputs/used_textures from gfx_cc_get_features, map cache),
+      textures/framebuffers hand out ids, every draw call is a no-op. CMake: OBJCXX enabled on APPLE, port/*.mm
+      globbed with -fobjc-arc, Metal/QuartzCore/Foundation linked.
+      Verified on the Mac: OpenGL unchanged; Metal boots ("SDL: created Metal window", "Metal: device Apple M4 Max")
+      and runs the game loop without crashing. **User to confirm** the window is solid dark red
+      (`cd build && PD_RENDERER=metal ./pd.arm64`). Note: if the Metal window can't be created, SDL falls
+      back to GL but the Metal backend is still selected -> fatal "no CAMetalLayer" (fine for now).
+- [ ] M3. (next) Shaders: MSL generator ported from gfx_opengl.cpp's GLSL generator (same CCFeatures), pipeline
       cache keyed by shader id + blend/depth state.
 - [ ] M4. Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
       (Visible result: the game renders.)
