@@ -176,6 +176,12 @@ add_compile_options(
   -include "versioninfo.h"
 )
 
+# Netplay needs bit-identical simulation on every device: no FMA contraction.
+option(PD_STRICT_FP "Deterministic floating point (needed for netplay)" ON)
+if(PD_STRICT_FP)
+  add_compile_options(-ffp-contract=off)
+endif()
+
 # Common warning flags
 add_compile_options(
   -Wall
