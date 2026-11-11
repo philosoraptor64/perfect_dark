@@ -10,7 +10,8 @@
 #        TIMELIMIT=minutes = the match ends (then the end screen / menus);
 #        HOST_INI/GUEST_INI=<pd.ini> = start that side with these settings;
 #        GUEST_FRAMES=n = the guest quits after n ticks; KILL_GUEST=s = kill -9 the guest after s seconds;
-#        LATE=4,9 = each side plays offline 4 / 9 s, then connects from the running game (Online menu path))
+#        LATE=4,9 = each side plays offline 4 / 9 s, then connects from the running game (Online menu path);
+#        EXTERNAL=1 = the connection belongs to a stand-in for i64 (pdnetInitExternal))
 set -uo pipefail
 cd "$(dirname "$0")/../../build"
 STAGE=${STAGE:-0x32}; BOTS=${BOTS:-2}; FRAMES=${FRAMES:-1801}; SEED=${SEED:-7}; DELAY=${DELAY:-2}
@@ -36,6 +37,14 @@ if [ -n "${LATE:-}" ]; then
 else
     hostlate=(); guestlate=()
 fi
+# EXTERNAL=1: the connection belongs to a stand-in for i64 (pdnetInitExternal): no handshake, the host's save
+# and settings in a session blob file, a fresh session from boot on both
+if [ "${EXTERNAL:-0}" = 1 ]; then
+    stagearg=()
+    common=("${sim[@]}" PD_SEED=$SEED PD_REPLAY_FRAMES=$FRAMES PD_NET_DELAY=$DELAY PD_RENDERER=$RENDERER
+            PD_NET_EXTERNAL_TEST=1 PD_NET_EXTERNAL_BLOB=$PWD/$out/blob.bin)
+    hostnet=(); guestnet=()
+fi
 hostbot=(); [ "$HOST_BOT" != 0 ] && hostbot=(PD_NET_BOT=$HOST_BOT)
 # SERVER=local: a room server on 127.0.0.1:7790 (n64net/server/rendezvous.py) and room codes instead of
 # addresses (ROOM=PDTS, RELAY=1 forces the relay path)
@@ -50,12 +59,12 @@ else
     hostnet=(PD_NET_PORT=7301)
     guestnet=(PD_NET_PEER=127.0.0.1:7301 PD_NET_PORT=7302)
 fi
-env "${common[@]}" ${hostlate[@]+"${hostlate[@]}"} ${hostbot[@]+"${hostbot[@]}"} "${hostnet[@]}" PD_NET_HOST=1 \
+env "${common[@]}" ${hostlate[@]+"${hostlate[@]}"} ${hostbot[@]+"${hostbot[@]}"} ${hostnet[@]+"${hostnet[@]}"} PD_NET_HOST=1 \
     ./pd.arm64 ${stagearg[@]+"${stagearg[@]}"} --savedir "$PWD/$out/host" > "$out/host.log" 2>&1 &
 hpid=$!
 sleep 1
 env "${common[@]}" ${guestlate[@]+"${guestlate[@]}"} ${DESYNC_TEST:+PD_NET_TEST_DESYNC=$DESYNC_TEST} ${GUEST_FRAMES:+PD_REPLAY_FRAMES=$GUEST_FRAMES} \
-    PD_NET_BOT=$GUEST_BOT "${guestnet[@]}" \
+    PD_NET_BOT=$GUEST_BOT ${guestnet[@]+"${guestnet[@]}"} \
     ./pd.arm64 ${stagearg[@]+"${stagearg[@]}"} --savedir "$PWD/$out/guest" > "$out/guest.log" 2>&1 &
 gpid=$!
 trap 'kill $hpid $gpid $spid 2>/dev/null' INT TERM

@@ -4,6 +4,7 @@
 #include <PR/ultratypes.h>
 #include "platform.h"
 #include "data.h"
+#include "bss.h"
 #include "types.h"
 #include "game/menu.h"
 #include "config.h"
@@ -374,4 +375,19 @@ MenuItemHandlerResult menuhandlerMainMenuPlayOnline(s32 operation, struct menuit
 		menuPushDialog(&g_OnlineMenuDialog);
 	}
 	return 0;
+}
+
+/* test aid PD_NET_TEST_MENU=tick: opens Play Online on top of the menu shown at that tick (screenshots) */
+void onlineMenuTestTick(s32 tick)
+{
+	static s32 at = -2;
+	if (at == -2) {
+		const char *e = getenv("PD_NET_TEST_MENU");
+		at = (e && *e) ? atoi(e) : -1;
+	}
+	if (at >= 0 && tick >= at) {
+		at = -1;
+		sysLogPrintf(LOG_NOTE, "online menu: test open at tick %d (menu root %d)", tick, g_MenuData.root);
+		menuPushDialog(&g_OnlineMenuDialog);
+	}
 }

@@ -566,7 +566,7 @@ void mainLoop(void)
 					detTickDelay(); // restart the schedule when back
 					continue;
 				}
-				if (g_DetFixedStep && !detTickDue()) {
+				if (g_DetFixedStep && !pdnetHostPaced() && !detTickDue()) {
 					sysSleep(5000); // 0.5 ms
 					continue;
 				}

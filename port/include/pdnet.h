@@ -75,6 +75,24 @@ const char *pdnetOnlineError(void);
 s32 pdnetOnlinePoll(void);
 /* game thread, top of the main loop: 1 = the session starts now (boot state restored; go to the title) */
 s32 pdnetOnlineBegin(void);
+/* A host app (i64) owns the connection and starts the game fresh on every machine for each online run. */
+struct pdnetexternal {
+	s32 localplayer;            /* 0 = the session's host (player 1), 1 = guest */
+	u64 seed;                   /* the same on every machine */
+	const void *blob;           /* the host's pdnetSessionBlob, delivered reliably by the host app */
+	u32 blobsize;
+	int (*send)(const void *data, u32 size);  /* game channel: unreliable datagrams */
+	int (*recv)(void *buf, u32 cap);          /* one datagram: size, 0 if none */
+	s32 hostpaced;              /* the host app calls the frames at 60 Hz: no own pacing */
+};
+enum { PDNET_EXT_PEER_AWAY = 1, PDNET_EXT_PEER_BACK = 2, PDNET_EXT_PEER_LEFT = 3 }; /* = n64_net_event */
+/* host of the session, before every run: what the guests adopt (save image, game-wide settings); 0 = too big */
+u32 pdnetSessionBlob(void *out, u32 cap);
+/* at game start instead of the boot-time connection; 0, or -1 (pdnetOnlineError() says why) */
+s32 pdnetInitExternal(const struct pdnetexternal *x);
+/* the host app's session events (once per frame) */
+void pdnetExternalEvent(s32 event);
+s32 pdnetHostPaced(void);
 /* tells the other player this machine is quitting (they play on offline) */
 void pdnetShutdown(void);
 /* after each simulated tick, with the deterministic state hash */

@@ -434,3 +434,28 @@ netplay.cfg, Metal on iOS, the UIScene app) plus Mac <-> iOS netplay over 127.0.
   START in CI opens the Perfect Menu; "Play Online" is the 7th item), screenshot with tools/metal/winid.swift +
   `screencapture -l`, check the multi-line status label layout; then iOS invite link (URL scheme -> Net.Server/
   Password, `xcrun simctl openurl` to test).
+
+## Running inside i64 (2026-11-11, Studio): the netplay core is ready for a module
+The user's direction: PD will piggyback on **i64's connection** (i64 owns room codes, lobby, voice, the session).
+pdnet now has an external mode matching `i64/include/n64_game.h`:
+- `pdnetSessionBlob(out, cap)` = n64_game_session_blob (host): 'PDSB' header + the host's EEPROM image (2 KB) +
+  game-wide settings (MaxExplosions). 2064 bytes.
+- `pdnetInitExternal(&{localplayer, seed, blob, blobsize, send, recv, hostpaced})` from n64_game_start (online):
+  no socket/room server/handshake (i64 matched the builds: use PDNET_BUILD_ID as netplay_build_id); the guest plays
+  on the host's save from the blob (never writes); each player's per-player settings still go over the game
+  channel ('PDST', a few hundred bytes, < net_max_datagram); deterministic session from boot with i64's seed.
+- `pdnetExternalEvent(N64_NET_PEER_AWAY/BACK/LEFT)` each frame from net_poll_event: away = wait without a limit,
+  left = the session ends, play on offline.
+- `hostpaced` (N64_LAUNCH_HOST_PACED) switches off PD's own 60 Hz fixed-step schedule. target_fps must be 60.
+- Packets: n64net input/sync packets and 'PDST'; all well under 1200 bytes, so no fragmentation needed (unlike
+  Smash's 1.6 KB handshake). Every PD packet starts with a 4-byte magic (n64net's or 'PDST'/'PDNH').
+- Test without i64: `EXTERNAL=1 tools/net/pair-test.sh` (PD_NET_EXTERNAL_TEST: a UDP socket stands in for the game
+  channel, the blob goes through a file). With different FOVs, MaxExplosions and saves per side: IN SYNC 81 checks.
+- Still needed for a PD module (MacBook agent leads i64 modules): PD's main loop is one endless loop
+  (mainLoop in port/src/pdmain.c), so either N64_GAME_INFO_OWN_THREAD or a coroutine/split per frame; audio through
+  host->audio_write; window = host->window (gfx_sdl2 creates its own today); re-entry (start/stop more than once:
+  the boot-state snapshot from the mid-game path, snapshotSaveBoot/LoadBoot, is a head start); ROM import (PD reads
+  the ROM directly: copy the .z64 into data_dir as pd.ntsc-final.z64).
+- The standalone app's own "Play Online" menu (onlinemenu.c) stays as a fallback; its dialog still hasn't been
+  seen on screen (pushing it over the agent-select menu with PD_NET_TEST_MENU does nothing visible; open it from the
+  Perfect Menu in Carrington Institute instead).

@@ -163,8 +163,18 @@ static u32 simRand(void)
 	return s_SimRand >> 8;
 }
 
+/* A host app (i64) owns the connection: datagrams go through its functions (pdnetInitExternal) */
+static int (*s_ExtSend)(const void *data, uint32_t size) = NULL;
+static int (*s_ExtRecv)(void *buf, uint32_t cap) = NULL;
+static s32 s_ExtPeerAway = 0;
+static s32 s_HostPaced = 0;
+
 static void rawSend(const uint8_t *data, uint32_t size)
 {
+	if (s_ExtSend) {
+		s_ExtSend(data, size);
+		return;
+	}
 	if (s_Sock >= 0 && s_HavePeer) {
 		sendto(s_Sock, data, size, 0, (struct sockaddr *)&s_Peer, sizeof(s_Peer));
 	}
@@ -246,7 +256,7 @@ static s32 peerGone(void)
 	if (s_PeerLeft) {
 		return 1;
 	}
-	if (n64net_input_peer_away(s_Net)) {
+	if (n64net_input_peer_away(s_Net) || s_ExtPeerAway) {
 		return 0; // its app is in the background: wait for it as long as it takes (it says when it's back)
 	}
 	return n64net_input_peer_silence_usecs(s_Net) > (u64)s_DropSecs * 1000000ull;
@@ -289,7 +299,9 @@ static s32 pollSocket(void)
 	for (;;) {
 		struct sockaddr_in from;
 		socklen_t fromlen = sizeof(from);
-		const ssize_t n = recvfrom(s_Sock, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fromlen);
+		memset(&from, 0, sizeof(from));
+		const ssize_t n = s_ExtRecv ? (ssize_t)s_ExtRecv(buf, sizeof(buf))
+			: recvfrom(s_Sock, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fromlen);
 		if (n <= 0) {
 			break;
 		}
@@ -717,10 +729,86 @@ static u64 configHash(u64 seed, s32 stage, s32 bots, float aspect)
 	return h;
 }
 
+/* test aid PD_NET_EXTERNAL_TEST=1: stands in for i64 (pdnetInitExternal): a plain UDP socket as the "host app's"
+ * game channel (host 7301, guest 7302 -> PD_NET_PEER) and the session blob through a file
+ * (PD_NET_EXTERNAL_BLOB: the host writes it, the guest waits for it) */
+static int s_TestSock = -1;
+static struct sockaddr_in s_TestPeer;
+static s32 s_TestHavePeer = 0;
+
+static int testSend(const void *data, u32 size)
+{
+	return s_TestHavePeer ? (int)sendto(s_TestSock, data, size, 0, (struct sockaddr *)&s_TestPeer, sizeof(s_TestPeer)) : -1;
+}
+
+static int testRecv(void *buf, u32 cap)
+{
+	struct sockaddr_in from;
+	socklen_t len = sizeof(from);
+	const ssize_t n = recvfrom(s_TestSock, buf, cap, 0, (struct sockaddr *)&from, &len);
+	if (n > 0 && !s_TestHavePeer) {
+		s_TestPeer = from;
+		s_TestHavePeer = 1;
+	}
+	return n > 0 ? (int)n : 0;
+}
+
+static void externalTest(u64 seed)
+{
+	const s32 host = envStr("PD_NET_HOST") && atoi(envStr("PD_NET_HOST")) != 0;
+	const char *blobpath = envStr("PD_NET_EXTERNAL_BLOB");
+	s_TestSock = socket(AF_INET, SOCK_DGRAM, 0);
+	struct sockaddr_in local;
+	memset(&local, 0, sizeof(local));
+	local.sin_family = AF_INET;
+	local.sin_port = htons(host ? 7301 : 7302);
+	bind(s_TestSock, (struct sockaddr *)&local, sizeof(local));
+	fcntl(s_TestSock, F_SETFL, fcntl(s_TestSock, F_GETFL, 0) | O_NONBLOCK);
+	if (!host) {
+		memset(&s_TestPeer, 0, sizeof(s_TestPeer));
+		s_TestPeer.sin_family = AF_INET;
+		s_TestPeer.sin_port = htons(7301);
+		inet_pton(AF_INET, "127.0.0.1", &s_TestPeer.sin_addr);
+		s_TestHavePeer = 1;
+	}
+	static u8 blob[64 * 1024];
+	u32 blobsize = 0;
+	if (host) {
+		blobsize = pdnetSessionBlob(blob, sizeof(blob));
+		FILE *f = blobpath ? fopen(blobpath, "wb") : NULL;
+		if (f) { fwrite(blob, 1, blobsize, f); fclose(f); }
+	} else {
+		for (s32 i = 0; i < 200 && !blobsize; i++) {
+			FILE *f = blobpath ? fopen(blobpath, "rb") : NULL;
+			if (f) { blobsize = (u32)fread(blob, 1, sizeof(blob), f); fclose(f); }
+			if (!blobsize) usleep(50000);
+		}
+	}
+	// the guest says hello first so the host learns its address (i64 knows it already)
+	if (!host) {
+		for (s32 i = 0; i < 3; i++) testSend("hi", 2);
+	}
+	struct pdnetexternal x;
+	memset(&x, 0, sizeof(x));
+	x.localplayer = host ? 0 : 1;
+	x.seed = seed;
+	x.blob = blob;
+	x.blobsize = blobsize;
+	x.send = testSend;
+	x.recv = testRecv;
+	if (pdnetInitExternal(&x) != 0) {
+		sysFatalError("%s", s_ConnError);
+	}
+}
+
 void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 {
 	const char *s;
 
+	if (envStr("PD_NET_EXTERNAL_TEST")) {
+		externalTest(seed);
+		return;
+	}
 	if (!pdnetWanted()) {
 		return;
 	}
@@ -1260,6 +1348,10 @@ void pdnetOnlineDismiss(void)
 
 s32 pdnetOnlinePoll(void)
 {
+	{
+		extern void onlineMenuTestTick(s32 tick);
+		onlineMenuTestTick(replayGetTick());
+	}
 	// test aid PD_NET_LATE=seconds: play offline that long, then host (PD_NET_HOST=1) or join like the Online menu
 	// (PD_NET_SERVER + PD_NET_ROOM, or PD_NET_PEER direct)
 	static u64 lateAt = 0;
@@ -1305,4 +1397,122 @@ s32 pdnetOnlineBegin(void)
 	replayBeginOnline(s_SessionSeed);
 	activate();
 	return 1;
+}
+
+/* --- A host app owns the connection (i64) -----------------------------------
+ * i64 has already paired the players, checked the build fingerprint and agreed on a seed; it starts the game
+ * fresh on every machine for each run. The host's save image and game-wide settings travel in i64's session blob
+ * (reliable); each player's own per-player settings still go over the game channel ('PDST'). */
+
+#define PDNET_BLOB_MAGIC 0x50445342u /* 'PDSB' */
+
+struct pdnetblobhdr {
+	u32 magic;
+	u32 version;
+	u32 eepromsize;
+	s32 maxexplosions;
+};
+
+u32 pdnetSessionBlob(void *out, u32 cap)
+{
+	struct pdnetblobhdr h;
+	h.magic = PDNET_BLOB_MAGIC;
+	h.version = 1;
+	h.eepromsize = osEepromImageSize();
+	h.maxexplosions = g_MaxExplosions;
+	if (sizeof(h) + h.eepromsize > cap) {
+		return 0;
+	}
+	memcpy(out, &h, sizeof(h));
+	osEepromGetImage((u8 *)out + sizeof(h));
+	return (u32)sizeof(h) + h.eepromsize;
+}
+
+void pdnetExternalEvent(s32 event)
+{
+	switch (event) {
+	case PDNET_EXT_PEER_AWAY:
+		s_ExtPeerAway = 1;
+		sysLogPrintf(LOG_NOTE, "netplay: the other player switched to another app; waiting");
+		break;
+	case PDNET_EXT_PEER_BACK:
+		s_ExtPeerAway = 0;
+		break;
+	case PDNET_EXT_PEER_LEFT:
+		if (!s_PeerLeft) {
+			sysLogPrintf(LOG_NOTE, "netplay: the other player left");
+		}
+		s_PeerLeft = 1;
+		break;
+	}
+}
+
+s32 pdnetHostPaced(void)
+{
+	return s_HostPaced;
+}
+
+s32 pdnetInitExternal(const struct pdnetexternal *x)
+{
+	readEnv();
+	s_ExtSend = x->send;
+	s_ExtRecv = x->recv;
+	s_HostPaced = x->hostpaced;
+	s_IsHost = x->localplayer == 0;
+	s_Session = 1;
+	s_SessionSeed = x->seed;
+	s_ConnError[0] = '\0';
+
+	const struct pdnetblobhdr *h = x->blob;
+	if (!h || x->blobsize < sizeof(*h) || h->magic != PDNET_BLOB_MAGIC || h->version != 1
+			|| sizeof(*h) + h->eepromsize > x->blobsize || h->eepromsize != osEepromImageSize()) {
+		snprintf(s_ConnError, sizeof(s_ConnError), "Netplay: the host's session data is missing or from another version.");
+		return -1;
+	}
+	free(s_SaveImage);
+	s_SaveSize = h->eepromsize;
+	s_SaveImage = malloc(s_SaveSize);
+	memcpy(s_SaveImage, (const u8 *)x->blob + sizeof(*h), s_SaveSize);
+
+	memcpy(s_LocalExtCfg, g_PlayerExtCfg, sizeof(s_LocalExtCfg));
+	s_LocalMaxExplosions = g_MaxExplosions;
+
+	n64net_input_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.num_players = 2;
+	cfg.local_player = s_IsHost ? 0 : 1;
+	cfg.session_id = (u32)(x->seed ^ (x->seed >> 32)) ^ 0x50440000u;
+	cfg.input_delay = envStr("PD_NET_DELAY") ? (u32)atoi(envStr("PD_NET_DELAY")) : 2;
+	cfg.rollback_window = 0;
+	cfg.ticks_per_second = 60;
+	cfg.send = netSend;
+	cfg.log = netLog;
+	s_Net = n64net_input_create(&cfg);
+	n64net_input_set_auto_delay(s_Net, cfg.input_delay, s_Rollback ? 3 : 6);
+
+	// each player's own per-player settings (the game channel is unreliable: ask until answered)
+	s_HavePeerSettings = 0;
+	const u64 deadline = nowUsecs() + (u64)s_WaitSecs * 1000000ull;
+	u64 nextReq = 0;
+	while (!s_HavePeerSettings) {
+		pollSocket();
+		const u64 now = nowUsecs();
+		if (s_PeerLeft || now > deadline) {
+			snprintf(s_ConnError, sizeof(s_ConnError), "Netplay: the other player didn't start the game.");
+			n64net_input_destroy(s_Net);
+			s_Net = NULL;
+			return -1;
+		}
+		if (now >= nextReq) {
+			sendSettings(PDNET_SET_REQ);
+			nextReq = now + 50000;
+		}
+		usleep(1000);
+	}
+
+	replayBeginOnline(x->seed);
+	activate();
+	g_MaxExplosions = h->maxexplosions; // the host's game-wide settings, from the blob
+	sysLogPrintf(LOG_NOTE, "netplay: running on the host app's connection (player %d)", s_IsHost ? 1 : 2);
+	return 0;
 }
