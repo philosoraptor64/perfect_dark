@@ -530,8 +530,14 @@ void gfx_metal_init(void) {
 void gfx_metal_on_resize(void) {
 }
 
+extern "C" bool gfx_sdl_app_inactive;
+
 void gfx_metal_start_frame(void) {
     sFrameCount++;
+    if (gfx_sdl_app_inactive) {
+        sDrawable = nil; // nothing is encoded or presented while the app is in the background
+        return;
+    }
     sDrawable = [sLayer nextDrawable];
     if (!sDrawable) {
         return;

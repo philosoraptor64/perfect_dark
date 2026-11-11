@@ -179,5 +179,8 @@ Steps:
       DEVELOPMENT_TEAM + `-allowProvisioningUpdates`, or sign the Ninja-built .app with a profile for
       io.github.philosoraptor.perfectdark. NEVER create a new Apple Development certificate. Copy the ROM to
       Documents (`devicectl device copy to --domain-type appDataContainer ... --destination Documents/pd.ntsc-final.z64`).
-      Then: controller, touch?, iOS background pause, audio session, frame pacing; log = Documents (check where
+      Done ahead (untested on a device): iOS background pause = `gfx_sdl_app_inactive` (gfx_sdl2.cpp, set on
+      SDL_APP_WILLENTERBACKGROUND, cleared on DIDENTERFOREGROUND); gfx_metal start_frame draws/presents nothing
+      while set. The game logic keeps running until iOS suspends the app (fine offline; netplay needs AWAY/BACK).
+      Then: controller, touch?, audio session, frame pacing; log = Documents (check where
       sysLogPrintf writes).

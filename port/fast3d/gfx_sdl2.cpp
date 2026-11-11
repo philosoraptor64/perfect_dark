@@ -14,6 +14,9 @@ static SDL_GLContext ctx;
 // Metal path (see docs/netplay-notes.md, Metal plan M1): the backend presents through
 // the CAMetalLayer of this view; no GL context exists.
 bool gfx_sdl_use_metal = false;
+// iOS: true between SDL_APP_WILLENTERBACKGROUND and SDL_APP_DIDENTERFOREGROUND; the Metal backend
+// draws nothing meanwhile (GPU work in the background fails and left other ports at ~1 fps after returning).
+extern "C" bool gfx_sdl_app_inactive = false;
 static SDL_MetalView metal_view;
 extern "C" void* gfx_sdl_get_metal_layer(void) {
     return metal_view ? SDL_Metal_GetLayer(metal_view) : nullptr;
@@ -335,6 +338,12 @@ static void gfx_sdl_handle_events(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
+            case SDL_APP_WILLENTERBACKGROUND:
+                gfx_sdl_app_inactive = true;
+                break;
+            case SDL_APP_DIDENTERFOREGROUND:
+                gfx_sdl_app_inactive = false;
+                break;
             case SDL_KEYDOWN:
                 if (event.key.keysym.sym == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT)) {
                     // alt-enter received, switch fullscreen state
