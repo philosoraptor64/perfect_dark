@@ -97,6 +97,10 @@
 #include "lib/vi.h"
 #include "types.h"
 #ifndef PLATFORM_N64
+extern s32 g_NetFullViews;
+extern s32 g_NetLocalPlayer;
+#endif
+#ifndef PLATFORM_N64
 #include "video.h"
 #endif
 
@@ -1732,6 +1736,14 @@ Gfx *lvRender(Gfx *gdl)
 					&& g_Vars.currentplayernum != 0) {
 				gdl = savedgdl;
 			}
+
+#ifndef PLATFORM_N64
+			// netplay full views: the other player's view was simulated like ours (its side effects happen
+			// on every machine) but only the local player's view is shown
+			if (g_NetFullViews && g_Vars.currentplayernum != g_NetLocalPlayer) {
+				gdl = savedgdl;
+			}
+#endif
 		} // end of player loop
 	} // end of stage if-statements
 

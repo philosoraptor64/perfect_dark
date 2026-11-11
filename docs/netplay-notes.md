@@ -111,6 +111,14 @@ the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** 
   netplay.cfg afterwards for normal play. Log: Documents/pd.log ("netplay:" lines; DESYNC would be logged).
   Both must be built from the same commit (VERSION_HASH is in the handshake; it comes from CMake configure time,
   so re-run cmake on both after pulling).
+- **One full-screen view per machine (2026-11-11, default; PD_NET_VIEW=split = old split screen):**
+  `g_NetFullViews` / `g_NetLocalPlayer` (pdnet.c). player.c `playerGetViewportWidth/Left/Height/Top` use
+  `VIEWPLAYERCOUNT()` (= 1 online), so every player gets the one-player viewport and aspect on every machine (the
+  aspect feeds aiming, so all machines must simulate the same views); lv.c's render loop still runs for every
+  player (it changes game state: propsTickPlayer, blur drug, autoaim...) and throws the remote player's display
+  list away with the game's own `gdl = savedgdl` pattern (used for co-op cutscenes). Pair test: IN SYNC 61
+  checks; each window shows its own player full screen. HUD elements still use PLAYERCOUNT() for some layout
+  (check on the phone).
 - Next: (a) the Mac <-> phone test above; (b) one full-screen view per
   device (as MK did) instead of split screen; (c) rollback (snapshots: globals + memp/mema heaps); (d) rendezvous
   (room codes) via n64net_rendezvous; (e) host picks the match in the real menus (like the Smash/MK sessions).

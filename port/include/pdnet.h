@@ -20,6 +20,8 @@
  *   PD_NET_DELAY=n           minimum input delay in ticks (default 2; auto delay up to 6)
  *   PD_NET_BOT=seed          test aid: drive the local player with scripted input
  *   PD_NET_WAIT_SECS=n       how long to wait for the other machine (default 60)
+ *   PD_NET_VIEW=split        both players split screen on both machines (default: each machine shows its
+ *                            own player full screen; every player is simulated with the full-screen view)
  *   PD_NET_TEST_DESYNC=tick  test aid: corrupt this side's RNG at that tick (sync check must report it)
  * On the iPhone (no environment variables) the same KEY=VALUE lines go in Documents/netplay.cfg; on other
  * machines PD_NET_CONFIG=<file> reads such a file. The environment wins over the file.

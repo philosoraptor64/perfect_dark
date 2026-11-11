@@ -25,6 +25,8 @@
 #define PDNET_STATS_EVERY 600
 
 static s32 s_Active = 0;
+s32 g_NetFullViews = 0;   // see src/game/player.c VIEWPLAYERCOUNT and lv.c
+s32 g_NetLocalPlayer = 0;
 static s32 s_IsHost = 0;
 static s32 s_Sock = -1;
 static struct sockaddr_in s_Peer;
@@ -305,6 +307,9 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	}
 
 	s_Active = 1;
+	g_NetLocalPlayer = s_IsHost ? 0 : 1;
+	// one full-screen view per machine (PD_NET_VIEW=split = classic split screen on both)
+	g_NetFullViews = !(envStr("PD_NET_VIEW") && strcmp(envStr("PD_NET_VIEW"), "split") == 0);
 	sysLogPrintf(LOG_NOTE, "netplay: connected as player %d (lockstep, input delay %u)", s_IsHost ? 1 : 2,
 		cfg.input_delay);
 }
