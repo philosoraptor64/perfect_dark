@@ -79,8 +79,10 @@ the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** 
 Lockstep first, then rollback, as in SpaghettiKart (`SpaghettiKart/src/port/KartNet.c` = the model: n64net_input
 with window 0, handshake, sync check). Steps: (1) add n64net as a submodule (philosoraptor64/n64net, pin the commit
 i64 uses; client/include/n64net_input.h); (2) `port/src/pdnet.c`: per-tick local pad -> n64net_input, remote pad ->
-the remote player's OSContPad in osContGetReadData (replayFilterPads is the hook point; the n64net pad has no right
-stick yet: send buttons + stick only, or extend the frame), host sends seed + aspect + stage + bot count + pd.ini
+the remote player's OSContPad in osContGetReadData (replayFilterPads is the hook point). **User decision (2026-11-10):
+extend the n64net frame with the right stick (rstick_x/rstick_y), it is essential for PD**: add the two s8 to
+`n64net_pad` (n64net is shared: keep the packet format versioned / backward compatible, the other games send 0, and
+tell the Studio agent on the board since it owns n64net), host sends seed + aspect + stage + bot count + pd.ini
 gameplay settings in the handshake, both boot with PD_REPLAY_BOTS-style setup and 2 players (chrslots bits 0+1,
 numplayers 2 -> split screen; later each device shows only its own player, as in MK); (3) sync check = the replay
 hash every 30 ticks; (4) Mac pair test script (two instances on 127.0.0.1), then Mac <-> Duo; (5) rollback needs
