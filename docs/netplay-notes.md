@@ -191,3 +191,11 @@ Steps:
       Then: controller, touch?, audio session, frame pacing; log = Documents (check where
       sysLogPrintf writes: on iOS always `Documents/pd.log`, done in system.c; pull it with
       `devicectl device copy from --domain-type appDataContainer --domain-identifier io.github.philosoraptor.perfectdark --source Documents/pd.log`).
+
+## Where the Metal work stopped (2026-11-10, end of Studio session)
+Done and pushed: M1-M4d, M6a, M6b (MSAA), vertex ring, M7a (iOS build compiles/links), iOS background pause,
+iOS log in Documents/pd.log, pipeline-cache fix. Decal depth bias (-2, -2) left as is (GL polygon offset on
+24-bit depth is about the same as Metal depthBias on Depth32Float near z = 1). Last thing started: a Skedar MP map
+comparison (`tools/metal/compare.sh skedar 20 --boot-stage 0x32`), not yet looked at.
+Next: M7b sign + install on a phone (MacBook), then in-level fb effects (bondview.c g_PrevFrameFb / g_BlurFb)
+compared with GL, then netplay determinism (fixed step in timing.c, RNG seeding).
