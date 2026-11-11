@@ -51,6 +51,8 @@ struct FramebufferMtl {
 // N64 texture-coordinate modes (gbi.h): G_TX_MIRROR = 1, G_TX_CLAMP = 2.
 constexpr uint32_t kTxMirror = 1;
 constexpr uint32_t kTxClamp = 2;
+// Until M6 there are no framebuffer textures: select_texture_fb binds this id (opaque black).
+constexpr uint32_t kNoFramebufferTexture = 0xFFFFFFFFu;
 
 // GL semantics: sampler state belongs to the texture object; upload/sampler calls act on the
 // texture bound to the active tile.
@@ -364,6 +366,7 @@ void gfx_metal_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vb
     const int fbw = (int)sDrawable.texture.width, fbh = (int)sDrawable.texture.height;
     [sEnc setRenderPipelineState:ps];
     [sEnc setDepthStencilState:depth_state()];
+    [sEnc setDepthClipMode:MTLDepthClipModeClamp]; // the GL backend enables GL_DEPTH_CLAMP
     [sEnc setDepthBias:(sDepthDecal ? -2.0f : 0.0f) slopeScale:(sDepthDecal ? -2.0f : 0.0f) clamp:0.0f];
     // Fast3D passes GL-style rectangles (origin bottom-left): flip to Metal's top-left origin.
     [sEnc setViewport:(MTLViewport){ (double)sVp[0], (double)(fbh - sVp[1] - sVp[3]), (double)sVp[2], (double)sVp[3],
@@ -421,6 +424,10 @@ void gfx_metal_init(void) {
         const uint32_t white = 0xffffffffu;
         [sWhiteTex replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&white bytesPerRow:4];
         sDefaultSampler = [sDevice newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+        id<MTLTexture> black = [sDevice newTextureWithDescriptor:d];
+        const uint32_t opaque_black = 0xff000000u;
+        [black replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&opaque_black bytesPerRow:4];
+        sTextures[kNoFramebufferTexture] = { black, sDefaultSampler };
     }
     sysLogPrintf(LOG_NOTE, "Metal: device %s", sDevice.name.UTF8String);
 
@@ -546,6 +553,9 @@ void* gfx_metal_get_framebuffer_texture_id(int fb_id) {
 }
 
 void gfx_metal_select_texture_fb(int fb_id) {
+    sActiveTile = 0;
+    sBoundTexture[0] = kNoFramebufferTexture;
+    sTileLinearFilter[0] = true;
 }
 
 void gfx_metal_delete_texture(uint32_t texID) {
