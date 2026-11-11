@@ -155,4 +155,29 @@ Steps:
 - [ ] M5. Depth modes (decal/zmode, prim depth), depth range, scissor/viewport, alpha/blend.
 - [ ] M6. Framebuffers: create/update/copy/clear, MSAA resolve, fb textures (blur, motion effects,
       the PD-specific copy_framebuffer users). A/B screenshots vs OpenGL on the Mac for parity.
-- [ ] M7. (next) iOS target: toolchain, UIScene SDL, Documents paths, Info.plist, controller; install on a phone.
+- [x] M7a. iOS build compiles + links (2026-11-10, Studio; NOT yet signed/installed: the Studio's Xcode has no
+      Apple account). CMake: `CMAKE_SYSTEM_NAME=iOS` sets `PD_IOS` (macro `PD_IOS=1`; not PLATFORM_IOS, which
+      <mach-o/loader.h> defines), skips the macOS deployment-target block, takes SDL from cache vars, zlib = -lz,
+      links OpenGLES (SDL references EAGL) + UIKit etc., makes a MACOSX_BUNDLE with `ios/Info.plist.in`
+      (bundle id `io.github.philosoraptor.perfectdark`, UIScene manifest -> SDLUIKitSceneDelegate, landscape,
+      controllers, Files-app Documents, local network, MinimumOSVersion 17.0). Code: Metal forced on iOS
+      (video.c), `SDL_main.h` + SDL_main signature (main.c), base and save dir = `$HOME/Documents` (fs.c): put the
+      ROM there as `pd.ntsc-final.z64` (Files > On My iPhone > Perfect Dark). Build (needs an iOS SDL2 with the
+      UIScene patch; BattleShip's iOS build has one):
+      ```
+      B=<BattleShip>/build-ios/_deps
+      cmake -S . -B build-ios -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release \
+        -DSDL2_LIBRARY=$B/sdl2-build/Release-iphoneos/libSDL2.a \
+        -DSDL2MAIN_LIBRARY=$B/sdl2-build/Release-iphoneos/libSDL2main.a \
+        "-DSDL2_INCLUDE_DIR=$B/sdl2-src/include;$B/sdl2-build/include"
+      cmake --build build-ios --target pd
+      ```
+      -> `build-ios/pd.arm64.app` (Mach-O arm64, LC_BUILD_VERSION platform 2 = iOS, minos 17.0).
+      (On the MacBook, i64's deps-out/ios SDL should work too.)
+- [ ] M7b. (next, MacBook: it can sign) Sign + install: either `-G Xcode` (untested for this CMake) with
+      DEVELOPMENT_TEAM + `-allowProvisioningUpdates`, or sign the Ninja-built .app with a profile for
+      io.github.philosoraptor.perfectdark. NEVER create a new Apple Development certificate. Copy the ROM to
+      Documents (`devicectl device copy to --domain-type appDataContainer ... --destination Documents/pd.ntsc-final.z64`).
+      Then: controller, touch?, iOS background pause, audio session, frame pacing; log = Documents (check where
+      sysLogPrintf writes).

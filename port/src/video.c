@@ -86,6 +86,9 @@ s32 videoInit(void)
 			vidRenderer = (strcmp(env, "metal") == 0) ? 1 : 0;
 		}
 	}
+#ifdef PD_IOS
+	vidRenderer = 1; // iOS has no desktop OpenGL: always Metal
+#endif
 	gfx_sdl_use_metal = (vidRenderer == 1);
 	if (gfx_sdl_use_metal) {
 		renderingAPI = &gfx_metal_api;

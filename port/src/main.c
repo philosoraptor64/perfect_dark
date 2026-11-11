@@ -1,5 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
+#ifdef PD_IOS
+#include <SDL_main.h> // SDL2main runs the UIKit app and calls main (renamed SDL_main)
+#endif
 #include <PR/ultratypes.h>
 #include <PR/ultrasched.h>
 #include <PR/os_message.h>
@@ -93,9 +96,15 @@ static void cleanup(void)
 	// TODO: actually shut down all subsystems
 }
 
+#ifdef PD_IOS
+int main(int argc, char *argv[]) // SDL_main's signature
+{
+	sysInitArgs(argc, (const char **)argv);
+#else
 int main(int argc, const char **argv)
 {
 	sysInitArgs(argc, argv);
+#endif
 
 	if (!sysArgCheck("--no-crash-handler")) {
 		crashInit();

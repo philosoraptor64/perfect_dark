@@ -108,6 +108,15 @@ s32 fsInit(void)
 
 	// get path to base dir and expand it if needed
 	const char *path = sysArgGetString("--basedir");
+#ifdef PD_IOS
+	// iPhone: the ROM (pd.ntsc-final.z64), pd.ini and saves all live in the app's Documents folder,
+	// which the Files app shows (UIFileSharingEnabled).
+	static char iosDocs[FS_MAXPATH];
+	snprintf(iosDocs, sizeof(iosDocs), "%s/Documents", getenv("HOME") ? getenv("HOME") : ".");
+	if (!path) {
+		path = iosDocs;
+	}
+#endif
 	if (!path) {
 		// check if there's a `data` directory in working directory or homeDir, otherwise default to exe directory
 		path = "$E/" DEFAULT_BASEDIR_NAME;
@@ -148,6 +157,11 @@ s32 fsInit(void)
 
 	// get path to save dir and expand it if needed
 	path = sysArgGetString("--savedir");
+#ifdef PD_IOS
+	if (!path) {
+		path = iosDocs;
+	}
+#endif
 	if (!path) {
 		if (portable) {
 			path = "$E";

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
-if(APPLE)
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
     # ARM Macs start at OS 11.
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum OS X deployment version")
@@ -12,6 +12,12 @@ if(APPLE)
 endif()
 
 project(pd C CXX)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  # iPhone build (Metal only). See docs/netplay-notes.md, Metal plan M7.
+  set(PD_IOS ON)
+  add_compile_definitions(PD_IOS=1)
+  set(PD_IOS_BUNDLE_ID "io.github.philosoraptor.perfectdark" CACHE STRING "iOS bundle identifier")
+endif()
 if(APPLE)
   enable_language(OBJCXX) # port/fast3d/gfx_metal.mm
 endif()
@@ -220,7 +226,15 @@ endif()
 set(LIBS )
 
 # SDL2
-find_package(SDL2 REQUIRED)
+if(PD_IOS)
+  # No find module for an iOS SDL: pass the static library and headers of an SDL2 built with
+  # the UIScene patch, e.g. BattleShip's build-ios/_deps/sdl2-build/Release-iphoneos/libSDL2.a.
+  if(NOT SDL2_LIBRARY OR NOT SDL2_INCLUDE_DIR OR NOT SDL2MAIN_LIBRARY)
+    message(FATAL_ERROR "iOS: set SDL2_LIBRARY, SDL2MAIN_LIBRARY and SDL2_INCLUDE_DIR")
+  endif()
+else()
+  find_package(SDL2 REQUIRED)
+endif()
 if(NINTENDO_SWITCH)
   if(NOT SDL2_LIBRARY OR NOT SDL2_INCLUDE_DIR)
     # sometimes FindSDL2 just wants us to suffer and does not set these
@@ -232,7 +246,11 @@ include_directories(SYSTEM "${SDL2_INCLUDE_DIR}")
 list(APPEND LIBS "${SDL2_LIBRARY}")
 
 # ZLib
-find_package(ZLIB REQUIRED)
+if(PD_IOS)
+  set(ZLIB_LIBRARY "-lz")
+else()
+  find_package(ZLIB REQUIRED)
+endif()
 if(ZLIB_INCLUDE_DIR)
   include_directories(SYSTEM "${ZLIB_INCLUDE_DIR}")
 endif()
@@ -244,6 +262,8 @@ if(NOT GL_LIBRARY)
     set(GL_LIBRARY opengl32)
   elseif(NINTENDO_SWITCH)
     set(GL_LIBRARY EGL glapi drm_nouveau)
+  elseif(PD_IOS)
+    set(GL_LIBRARY "-framework OpenGLES") # SDL's UIKit backend references EAGL; PD renders with Metal
   elseif(APPLE)
     set(GL_LIBRARY "-framework OpenGL")
   else()
@@ -360,6 +380,20 @@ add_dependencies(pd pd_headers)
 target_link_libraries(pd ${LIBS})
 if(APPLE)
   target_link_libraries(pd "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+endif()
+if(PD_IOS)
+  target_link_libraries(pd "${SDL2MAIN_LIBRARY}"
+    "-framework UIKit" "-framework CoreGraphics" "-framework CoreMotion" "-framework GameController"
+    "-framework CoreHaptics" "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio"
+    "-framework CoreBluetooth" "-framework ImageIO" "-framework UniformTypeIdentifiers" "-liconv")
+  set_target_properties(pd PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/ios/Info.plist.in"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "${PD_IOS_BUNDLE_ID}"
+    MACOSX_BUNDLE_BUNDLE_NAME "Perfect Dark"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1"
+    MACOSX_BUNDLE_BUNDLE_VERSION "1"
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${PD_IOS_BUNDLE_ID}")
 endif()
 set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
 if(WIN32)
