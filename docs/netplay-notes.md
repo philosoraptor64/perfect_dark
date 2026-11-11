@@ -70,6 +70,14 @@ Documents/replay/, then `devicectl device process launch --environment-variables
 io.github.philosoraptor.perfectdark --savedir replay/save2 --boot-stage 0x30`, it quits by itself (~40 s).
 Also: `PD_REPLAY_DUMP=from:to` writes every player/chr/prop with exact (%a) values for those ticks.
 
+## IN PROGRESS (2026-11-10 night, MacBook): Combat Sim replay check
+Plan: `PD_REPLAY_BOTS=N` (deterministic mode) boots straight into a Combat Sim match against N normal simulants
+(stage = `--boot-stage`, e.g. 0x32 Skedar): replaycheck.c `replaySetupMatch()` sets g_MpSetup.stagenum/chrslots
+(bit 0 = player 1, bits 4.. = bots) and g_BotConfigsArray[i].difficulty/type, called from the pdmain.c branch that
+does `g_MpSetup.chrslots = 1; mpReset()` (that branch also gets `|| replayWantsMatch()`). Then
+`STAGE=0x32 PD_REPLAY_BOTS=3 tools/replay/replay-test.sh` (3 Mac runs identical), then the same on the Duo
+(see the phone command above). After that: 2-player netplay through n64net (Combat Sim, lockstep first).
+
 ## Next steps
 1. Human check on the Mac: picture, sound, controller, play a level and Combat Simulator.
 2. Fixed-step mode + seeded RNG behind an env var, then a replay check like
