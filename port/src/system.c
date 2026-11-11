@@ -88,9 +88,22 @@ void sysInit(void)
 {
 	startTick = sysGetMicroseconds();
 
+#ifdef PD_IOS
+	// iPhone: always log, into Documents (visible in the Files app, copyable with devicectl).
+	snprintf(logPath, sizeof(logPath), "%s/Documents/%s", getenv("HOME") ? getenv("HOME") : ".", LOG_FNAME);
+	{
+		FILE *f = fopen(logPath, "wb");
+		if (f) {
+			fclose(f);
+		} else {
+			logPath[0] = '\0';
+		}
+	}
+#else
 	if (sysArgCheck("--log")) {
 		sysLogSetPath(LOG_FNAME);
 	}
+#endif
 
 #ifdef VERSION_HASH
 	sysLogPrintf(LOG_NOTE, "version: " VERSION_BRANCH " " VERSION_HASH " (" VERSION_TARGET ")");

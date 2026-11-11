@@ -183,4 +183,5 @@ Steps:
       SDL_APP_WILLENTERBACKGROUND, cleared on DIDENTERFOREGROUND); gfx_metal start_frame draws/presents nothing
       while set. The game logic keeps running until iOS suspends the app (fine offline; netplay needs AWAY/BACK).
       Then: controller, touch?, audio session, frame pacing; log = Documents (check where
-      sysLogPrintf writes).
+      sysLogPrintf writes: on iOS always `Documents/pd.log`, done in system.c; pull it with
+      `devicectl device copy from --domain-type appDataContainer --domain-identifier io.github.philosoraptor.perfectdark --source Documents/pd.log`).
