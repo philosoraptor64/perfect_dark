@@ -390,6 +390,15 @@ add_custom_target(pd_headers ALL DEPENDS ${JSON_HEADERS})
 set(BIN_NAME "pd${BIN_REGION}.${TARGET_ARCH}")
 add_executable(pd ${SRC})
 add_dependencies(pd pd_headers)
+
+# netplay build fingerprint (cmake/NetBuildId.cmake), refreshed at every build
+add_custom_target(pd_net_build_id ALL
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${CMAKE_BINARY_DIR}/generated/pdnet_build_id.h
+          -P ${CMAKE_SOURCE_DIR}/cmake/NetBuildId.cmake
+  BYPRODUCTS ${CMAKE_BINARY_DIR}/generated/pdnet_build_id.h
+  COMMENT "Netplay build fingerprint")
+add_dependencies(pd pd_net_build_id)
+target_include_directories(pd PRIVATE ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(pd ${LIBS})
 if(APPLE)
   target_link_libraries(pd "-framework Metal" "-framework QuartzCore" "-framework Foundation")

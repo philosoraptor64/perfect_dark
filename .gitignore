@@ -27,3 +27,5 @@ CppProperties.json
 .idea
 cmake-build-debug
 build-ios/
+build-iossim/
+build-iossim-sdl/

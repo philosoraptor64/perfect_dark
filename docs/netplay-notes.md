@@ -379,3 +379,24 @@ iOS log in Documents/pd.log, pipeline-cache fix. Decal depth bias (-2, -2) left 
 comparison (`tools/metal/compare.sh skedar 20 --boot-stage 0x32`), not yet looked at.
 Next: M7b sign + install on a phone (MacBook), then in-level fb effects (bondview.c g_PrevFrameFb / g_BlurFb)
 compared with GL, then netplay determinism (fixed step in timing.c, RNG seeding).
+
+## iOS Simulator (2026-11-11, Studio)
+The iOS build runs in the Simulator on this Mac: no signing, and it tests the iOS-only code (Documents paths,
+netplay.cfg, Metal on iOS, the UIScene app) plus Mac <-> iOS netplay over 127.0.0.1.
+- SDL2 for the simulator (BattleShip's patched source, once):
+  `cmake -S <BattleShip>/build-ios/_deps/sdl2-src -B build-iossim-sdl -G Ninja -DCMAKE_SYSTEM_NAME=iOS
+  -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0
+  -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF && ninja -C build-iossim-sdl`
+- PD: as the device build but `-B build-iossim -DCMAKE_OSX_SYSROOT=iphonesimulator`, SDL from build-iossim-sdl
+  (`-DSDL2_INCLUDE_DIR="$S/include-config-release/SDL2;<sdl2-src>/include;$S/include"`).
+- `tools/net/sim-test.sh` (ROM=<NTSC 1.1 ROM> the first time; SESSION=1, FRAMES, LATENCY..., SERVER=local):
+  Mac host vs the booted simulator as guest, settings through Documents/netplay.cfg. Screenshot:
+  `xcrun simctl io booted screenshot x.png`. Launch with `SIMCTL_CHILD_SDL_AUDIODRIVER=dummy`.
+- Results: direct match 1200 ticks and a session from boot 3600 ticks (menus included) IN SYNC.
+- Found by it and fixed: (1) **fixed-step games ran at up to 120 ticks/s on 120 Hz displays** (the main loop
+  lets a tick start after half a frame; fixed step threw the lost time away): the simulator guest waited 16 of
+  every 20 s. Now an absolute 60 Hz schedule in fixed-step mode (pdmain.c detTickDue; time sync delays it by a
+  tick). Affects ProMotion iPhones and MacBooks. (2) The netplay version check used the git hash captured at
+  configure time, so a rebuilt-but-not-reconfigured copy claimed an old commit: now `PDNET_BUILD_ID`, a hash of
+  the simulation sources (src, include, port/src, port/include, n64net client) recomputed every build
+  (cmake/NetBuildId.cmake -> build/generated/pdnet_build_id.h), logged as `netplay: build <id>`.

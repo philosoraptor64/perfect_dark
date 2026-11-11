@@ -311,6 +311,35 @@ void mainOverrideVariable(char *name, void *value)
  * Decomp patches these reads in its build system so it can be played
  * without the development board.
  */
+/* Fixed-step pacing (netplay, replays): every tick counts as exactly 1/60 s, so ticks must also start
+ * 1/60 s apart in real time. The normal check in mainLoop lets a tick start after half a frame (the variable
+ * time step evens it out), which on a 120 Hz display ran fixed-step games at up to 120 ticks/s (the other
+ * player then waited every tick). An absolute schedule; a machine that falls far behind restarts it rather
+ * than rushing to catch up. */
+#define DET_TICK_NS (1000000000ull / 60)
+static u64 s_DetNextNs = 0;
+
+static s32 detTickDue(void)
+{
+	const u64 now = sysGetMicroseconds() * 1000ull;
+	if (!s_DetNextNs || now > s_DetNextNs + 4 * DET_TICK_NS) {
+		s_DetNextNs = now;
+	}
+	if (now + 300000ull < s_DetNextNs) { // within 0.3 ms counts as due
+		return 0;
+	}
+	s_DetNextNs += DET_TICK_NS;
+	return 1;
+}
+
+/* time sync: start the next tick one tick later */
+static void detTickDelay(void)
+{
+	if (s_DetNextNs) {
+		s_DetNextNs += DET_TICK_NS;
+	}
+}
+
 void mainLoop(void)
 {
 	s32 ending = false;
@@ -515,9 +544,17 @@ void mainLoop(void)
 		while (g_MainChangeToStageNum < 0) {
 			const s32 cycles = osGetCount() - g_Vars.thisframestartt;
 			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
+				if (g_DetFixedStep && !detTickDue()) {
+					sysSleep(5000); // 0.5 ms
+					continue;
+				}
 				if (pdnetTimeSyncSkip()) {
 					// netplay time sync: this side is ahead, let the other one catch up for a frame
-					sysSleep(160000); // 16 ms (units of 100 ns)
+					if (g_DetFixedStep) {
+						detTickDelay();
+					} else {
+						sysSleep(160000); // 16 ms (units of 100 ns)
+					}
 					continue;
 				}
 				schedStartFrame(&g_Sched);

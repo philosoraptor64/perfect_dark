@@ -19,6 +19,7 @@
 #include "replaycheck.h"
 #include "n64net_input.h"
 #include "n64net_rendezvous.h"
+#include "pdnet_build_id.h"
 
 /* See pdnet.h. Lockstep (rollback window 0) through n64net_input. */
 
@@ -390,8 +391,8 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	if (server) {
 		// room codes: the room server pairs us with the other player (hole punching, relay as a fallback)
 		char game[96];
-#ifdef VERSION_HASH
-		snprintf(game, sizeof(game), "pd-%s+%s", VERSION_ROMID, VERSION_HASH);
+#ifdef PDNET_BUILD_ID
+		snprintf(game, sizeof(game), "pd-%s+%s", VERSION_ROMID, PDNET_BUILD_ID);
 #else
 		snprintf(game, sizeof(game), "pd-%s+dev", VERSION_ROMID);
 #endif
@@ -423,14 +424,17 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 		sysLogPrintf(LOG_NOTE, "netplay: room %s, %s connection", res.room, res.relayed ? "relayed" : "direct");
 	}
 
+#ifdef PDNET_BUILD_ID
+	sysLogPrintf(LOG_NOTE, "netplay: build %s", PDNET_BUILD_ID);
+#endif
 	// everything that must be equal on both machines
 	u64 h = 0xcbf29ce484222325ull;
 	h = fnv(h, &seed, sizeof(seed));
 	h = fnv(h, &stage, sizeof(stage));
 	h = fnv(h, &bots, sizeof(bots));
 	h = fnv(h, &aspect, sizeof(aspect));
-#ifdef VERSION_HASH
-	h = fnv(h, VERSION_HASH, strlen(VERSION_HASH));
+#ifdef PDNET_BUILD_ID
+	h = fnv(h, PDNET_BUILD_ID, strlen(PDNET_BUILD_ID));
 #endif
 	s_ConfigHash = h;
 
