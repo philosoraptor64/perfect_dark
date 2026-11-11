@@ -31,6 +31,10 @@ void frametimeApply(s32 diffframe60, s32 diffframe240, s32 frametime)
 	g_Vars.diffframe240freal = PALUPF(g_Vars.diffframe240f);
 }
 
+#ifndef PLATFORM_N64
+extern s32 g_RollbackResim; // port/src/rollback.c
+#endif
+
 void frametimeCalculate(void)
 {
 	u32 count;
@@ -51,7 +55,11 @@ void frametimeCalculate(void)
 			sysSleep(EXTRA_SLEEP_TIME);
 		}
 #endif
-	} while (g_Vars.mininc60 && diffframe60 < g_Vars.mininc60);
+	} while (g_Vars.mininc60 && diffframe60 < g_Vars.mininc60
+#ifndef PLATFORM_N64
+			&& !g_RollbackResim // resimulated ticks don't wait for real time
+#endif
+			);
 
 	g_Vars.lostframetime60t = g_Vars.lostframetime60t + diffframet - diffframe60 * CYCLES_PER_FRAME;
 	g_Vars.lostframetime240t = g_Vars.lostframetime240t + diffframet - diffframe240 * (CYCLES_PER_FRAME / 4);

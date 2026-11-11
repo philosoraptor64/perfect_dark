@@ -14,7 +14,11 @@ struct t0slot {
 	u16 unk06;
 };
 
-struct t0slot *t0slot;
+#ifndef PD_SNAPSHOT_OUTSIDE
+#define PD_SNAPSHOT_OUTSIDE
+#endif
+// points at a stack array of the render code: outside rollback snapshots
+PD_SNAPSHOT_OUTSIDE struct t0slot *t0slot;
 u8 *t2ptr8;
 s32 t3;
 u8 *t3ptr8;

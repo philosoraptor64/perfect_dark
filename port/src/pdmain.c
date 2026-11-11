@@ -5,6 +5,7 @@
 #include "lib/sched.h"
 #include "replaycheck.h"
 #include "pdnet.h"
+#include "rollback.h"
 #include "lib/vars.h"
 #include "constants.h"
 #include "game/camdraw.h"
@@ -511,6 +512,7 @@ void mainLoop(void)
 				schedStartFrame(&g_Sched);
 				mainTick();
 				replayEndTick();
+				rollbackAfterTick();
 				schedEndFrame(&g_Sched);
 			}
 			if (g_TickExtraSleep) {

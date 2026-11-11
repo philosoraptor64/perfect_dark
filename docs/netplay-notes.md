@@ -119,6 +119,32 @@ the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** 
   list away with the game's own `gdl = savedgdl` pattern (used for co-op cutscenes). Pair test: IN SYNC 61
   checks; each window shows its own player full screen. HUD elements still use PLAYERCOUNT() for some layout
   (check on the phone).
+- **Rollback groundwork: snapshots + SyncTest PASS (2026-11-11).**
+  - `port/include/snapshot_section.h` force-included (CMake, Apple) into every C file under src/ (game, libs,
+    audio sequencer) with -fno-common: their globals live in the `__PDSNAP` segment (~357 KB). port/ code keeps
+    the normal sections (files that include the header for its macros must define PD_SNAPSHOT_EXCLUDE first,
+    like snapshot.c). Moved out: g_RdpTaskA/B (stack address of mainTick's msg), audiomgr profiling timers,
+    modelasm's t0slot (stack array).
+  - `port/src/snapshot.c`: snapshot = __PDSNAP data+bss + every memp pool's [start, leftpos) and
+    [rightpos, end) (both banks, merged; per pool, NOT "lowest rightpos .. highest end": that missed the shared
+    texture pool on the right side and corrupted its list after rollbacks) minus the graphics/vertex buffers
+    (g_GfxBuffers/g_VtxBuffers, render output). ~3.6 MB (Skedar) / 5.4 MB (Defection); save 0.05-0.12 ms,
+    load 0.05-0.14 ms on the M4 Max.
+  - Room geometry is malloc'ed by the port (bg.c): `rollbackRoomAlloc/Free` keep one buffer per room while
+    rollback is on (never freed; a reload writes the same bytes; room data is read-only after load).
+  - `port/src/rollback.c`: rollback point = right after replayEndTick in the main loop (pdmain.c);
+    `rollbackStep()` = schedEndFrame + schedStartFrame + mainTick + replayEndTick with `g_RollbackResim` set
+    (pdsched.c skips videoStart/EndFrame, DL submission, audio output, input polling, screenshots; timing.c skips
+    the real-time wait; replaycheck.c feeds pads from a per-tick ring and does no hash log/exit).
+  - SyncTest: `PD_SYNCTEST=N [PD_SYNCTEST_FROM=60] PD_TEST_BOT=seed` (+ PD_SEED, PD_REPLAY_BOTS, --boot-stage,
+    PD_REPLAY_FRAMES); `PD_SYNCTEST_FULL=1` compares whole snapshots byte for byte and lists differing addresses;
+    `tools/net/symbolize-synctest.py <log> <binary>` maps them to globals. `PD_SYNCTEST_TEXCHECK=1` validates the
+    shared texture list. Results: Skedar + 3 simulants 2400 ticks at N=4 and N=8, Defection 1800 ticks at N=8:
+    0 mismatches. Known harmless full-compare noise: g_Vars.prevframestartt (clock), audio event struct padding,
+    var80091590.
+  - Test tips: on the Studio Core Audio is wedged by the remote-desktop audio driver: run tests with
+    `SDL_AUDIODRIVER=dummy SDL_AUDIO_DRIVER=dummy` (--no-sound still opens the device). lldb works with that too
+    (hardware watchpoints found the texture-list bug). stdout is block-buffered into files: crash logs lose tails.
 - Next: (a) the Mac <-> phone test above; (b) one full-screen view per
   device (as MK did) instead of split screen; (c) rollback (snapshots: globals + memp/mema heaps); (d) rendezvous
   (room codes) via n64net_rendezvous; (e) host picks the match in the real menus (like the Smash/MK sessions).

@@ -10,6 +10,7 @@
 #include "system.h"
 #include "replaycheck.h"
 #include "pdnet.h"
+#include "rollback.h"
 
 /* See replaycheck.h. */
 
@@ -35,7 +36,12 @@ static s32 s_PlayCount = 0;
 static s32 s_MaxTicks = -1;
 static s32 s_Tick = 0; // logic ticks since boot (index of the tick being simulated)
 static s32 s_Bots = 0; // PD_REPLAY_BOTS
-static s32 s_DumpFrom = -1, s_DumpTo = -1; // PD_REPLAY_DUMP=from:to = per-object lines in the hash log
+static s32 s_DumpFrom = -1, s_DumpTo = -1;
+extern s32 g_RollbackResim;
+// pads per tick as the simulation saw them, so resimulated ticks (rollback, SyncTest) get the same input
+#define PAD_RING 512
+static OSContPad s_PadRing[PAD_RING][REPLAY_PADS];
+static u32 s_TestBotSeed = 0; // PD_TEST_BOT=seed: scripted controller 1 for offline tests (SyncTest) // PD_REPLAY_DUMP=from:to = per-object lines in the hash log
 
 static const char *envStr(const char *name)
 {
@@ -127,7 +133,10 @@ void replayInit(void)
 	const char *play = envPath("PD_REPLAY_PLAY");
 	const char *s;
 
-	g_ReplayActive = (check || rec || play) ? 1 : 0;
+	g_ReplayActive = (check || rec || play || envStr("PD_SYNCTEST")) ? 1 : 0;
+	if ((s = envStr("PD_TEST_BOT"))) {
+		s_TestBotSeed = (u32)strtoul(s, NULL, 0) | 1;
+	}
 	g_DetFixedStep = g_ReplayActive || pdnetWanted() || ((s = envStr("PD_DETERMINISTIC")) && atoi(s));
 
 	if (!g_DetFixedStep) {
@@ -196,6 +205,8 @@ void replayInit(void)
 
 	sysLogPrintf(LOG_NOTE, "deterministic mode: fixed step, aspect %.4f, seed %llu%s%s%s", gfx_fixed_aspect,
 		(unsigned long long)s_Seed, check ? ", hash log" : "", rec ? ", recording" : "", play ? ", playback" : "");
+
+	rollbackInit();
 
 	// netplay: both machines must agree on everything above before tick 0
 	pdnetInit(s_Seed, g_StageNum, s_Bots, gfx_fixed_aspect);
@@ -268,6 +279,11 @@ void replayFilterPads(OSContPad *pads, s32 count)
 		count = REPLAY_PADS;
 	}
 
+	if (g_RollbackResim) {
+		memcpy(pads, s_PadRing[s_Tick % PAD_RING], sizeof(OSContPad) * count);
+		return;
+	}
+
 	if (s_Play) {
 		for (s32 i = 0; i < count; i++) {
 			if (s_Tick < s_PlayCount) {
@@ -277,6 +293,7 @@ void replayFilterPads(OSContPad *pads, s32 count)
 				pads[i].errnum = i == 0 ? 0 : CONT_NO_RESPONSE_ERROR;
 			}
 		}
+		memcpy(s_PadRing[s_Tick % PAD_RING], pads, sizeof(OSContPad) * count);
 		return;
 	}
 
@@ -286,6 +303,12 @@ void replayFilterPads(OSContPad *pads, s32 count)
 		pads[i].errnum = CONT_NO_RESPONSE_ERROR;
 	}
 	pads[0].errnum = 0;
+
+	if (s_TestBotSeed) {
+		pdnetBotPad(s_Tick, s_TestBotSeed, &pads[0]);
+	}
+
+	memcpy(s_PadRing[s_Tick % PAD_RING], pads, sizeof(OSContPad) * count);
 
 	if (s_RecordFile) {
 		// the game may read the pads more than once per tick: keep the last read
@@ -366,9 +389,29 @@ static u64 hashState(u32 *outNumProps)
 	return h;
 }
 
+u64 replayStateHash(void)
+{
+	return hashState(NULL);
+}
+
+s32 replayGetTick(void)
+{
+	return s_Tick;
+}
+
+void replaySetTick(s32 tick)
+{
+	s_Tick = tick;
+}
+
 void replayEndTick(void)
 {
 	if (!g_DetFixedStep) {
+		return;
+	}
+
+	if (g_RollbackResim) {
+		s_Tick++; // resimulation: no hash log, netplay bookkeeping or quitting
 		return;
 	}
 

@@ -314,10 +314,10 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 		cfg.input_delay);
 }
 
-/* PD_NET_BOT: wanders, turns, aims with the right stick and fires in bursts (deterministic per tick). */
-static void botPad(s32 tick, OSContPad *pad)
+/* PD_NET_BOT / PD_TEST_BOT: wanders, turns, aims with the right stick and fires in bursts (deterministic per tick). */
+void pdnetBotPad(s32 tick, u32 seed, OSContPad *pad)
 {
-	u32 x = s_BotSeed ^ ((u32)(tick / 20) * 2654435761u);
+	u32 x = seed ^ ((u32)(tick / 20) * 2654435761u);
 	x ^= x >> 13;
 	x *= 0x5bd1e995u;
 	x ^= x >> 15;
@@ -401,7 +401,7 @@ void pdnetFilterPads(OSContPad *pads, s32 count, s32 tick)
 		// the local player's physical controller is always controller 1
 		OSContPad local = pads[0];
 		if (s_BotSeed) {
-			botPad(tick, &local);
+			pdnetBotPad(tick, s_BotSeed, &local);
 		}
 		// ticks in which the game read no pads still get an input (unchanged), so the ledgers stay in step
 		for (s32 t = s_LastTick + 1; t <= tick; t++) {

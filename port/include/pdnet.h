@@ -37,6 +37,8 @@ s32 pdnetActive(void);
 /* osContGetReadData: replaces pads 1-2 with the exchanged inputs for the current tick */
 void pdnetFilterPads(OSContPad *pads, s32 count, s32 tick);
 void pdnetFilterStatus(OSContStatus *status, s32 count);
+/* scripted test input (PD_NET_BOT, PD_TEST_BOT) */
+void pdnetBotPad(s32 tick, u32 seed, OSContPad *pad);
 /* after each simulated tick, with the deterministic state hash */
 void pdnetEndTick(s32 tick, u64 hash);
 

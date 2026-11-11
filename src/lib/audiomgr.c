@@ -14,10 +14,14 @@
 u32 var80091560;
 u32 var80091564;
 u64 var80091568;
-u64 var80091570;
+#ifndef PD_SNAPSHOT_OUTSIDE
+#define PD_SNAPSHOT_OUTSIDE
+#endif
+// audio profiling timers (real clock): outside rollback snapshots
+PD_SNAPSHOT_OUTSIDE u64 var80091570;
 u64 var80091578;
-u64 var80091580;
-u64 var80091588;
+PD_SNAPSHOT_OUTSIDE u64 var80091580;
+PD_SNAPSHOT_OUTSIDE u64 var80091588;
 u64 var80091590;
 u32 var80091598;
 u32 var8009159c;

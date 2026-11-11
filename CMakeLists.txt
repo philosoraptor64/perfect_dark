@@ -349,6 +349,15 @@ set(SRC_LIB
 )
 list(PREPEND SRC_LIB "${CMAKE_SOURCE_DIR}")
 
+# Rollback snapshots (Apple): every game/lib C file puts its mutable globals in the __PDSNAP segment
+# (port/include/snapshot_section.h); port/ code keeps the normal sections.
+if(APPLE)
+  set(PD_SNAPSHOT_SOURCES ${SRC_GAME} ${SRC_LIB_MP3} ${SRC_LIB_NAUDIO} ${SRC_LIB_ULTRA_AUDIO} ${SRC_LIB_GU} ${SRC_LIB})
+  list(FILTER PD_SNAPSHOT_SOURCES INCLUDE REGEX "\\.c$")
+  set_source_files_properties(${PD_SNAPSHOT_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "-include;${CMAKE_SOURCE_DIR}/port/include/snapshot_section.h;-fno-common")
+endif()
+
 set(SRC
   ${SRC_GAME}
   ${SRC_PORT}

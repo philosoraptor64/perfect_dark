@@ -44,6 +44,9 @@
 #include "gbiex.h"
 #include "types.h"
 #ifndef PLATFORM_N64
+#include "rollback.h"
+#endif
+#ifndef PLATFORM_N64
 #include "preprocess.h"
 #include "system.h"
 #include "video.h"
@@ -2836,7 +2839,8 @@ void bgLoadRoom(s32 roomnum)
 	allocation = memaAlloc(alloclen);
 #else
 	// allocate room data from heap to not take up mema space
-	allocation = sysMemAlloc(alloclen);
+	// (rollback keeps one buffer per room instead: see port/src/rollback.c)
+	allocation = rollbackRoomAlloc(roomnum, 0, alloclen);
 #endif
 
 	if (allocation != NULL) {
@@ -3079,7 +3083,7 @@ void bgUnloadRoom(s32 roomnum)
 		size = ((g_Rooms[roomnum].numvtxbatches) * sizeof(struct vtxbatch) + 0xf) & ~0xf;
 		memaFree(g_Rooms[roomnum].vtxbatches, size);
 #else
-		sysMemFree(g_Rooms[roomnum].vtxbatches);
+		rollbackRoomFree(roomnum, 1, g_Rooms[roomnum].vtxbatches);
 #endif
 		g_Rooms[roomnum].vtxbatches = NULL;
 	}
@@ -3089,7 +3093,7 @@ void bgUnloadRoom(s32 roomnum)
 		size = g_Rooms[roomnum].gfxdatalen;
 		memaFree(g_Rooms[roomnum].gfxdata, size);
 #else
-		sysMemFree(g_Rooms[roomnum].gfxdata);
+		rollbackRoomFree(roomnum, 0, g_Rooms[roomnum].gfxdata);
 #endif
 		g_Rooms[roomnum].gfxdata = NULL;
 	}
@@ -3462,7 +3466,7 @@ void bgFindRoomVtxBatches(s32 roomnum)
 #ifdef PLATFORM_N64
 			batches = memaAlloc((batchindex * sizeof(struct vtxbatch) + 0xf) & ~0xf);
 #else
-			batches = sysMemAlloc((batchindex * sizeof(struct vtxbatch) + 0xf) & ~0xf);
+			batches = rollbackRoomAlloc(roomnum, 1, (batchindex * sizeof(struct vtxbatch) + 0xf) & ~0xf);
 #endif
 
 			if (batches != NULL) {

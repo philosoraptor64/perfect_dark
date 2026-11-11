@@ -219,6 +219,8 @@ void __scUpdateViMode(void)
 	}
 }
 
+extern s32 g_RollbackResim; // port/src/rollback.c: resimulating ticks (no drawing, sound output or input polling)
+
 /**
  * Nintendo's sheduler accepts tasks on a "command" message queue.
  * This isn't used here.
@@ -232,14 +234,16 @@ void schedSubmitTask(OSSched *sc, OSScTask *t)
 {
 	if (sc->doAudio && t->list.t.type == M_AUDTASK) {
 		// send this into the mixer
-	} else if (t->list.t.type == M_GFXTASK) {
+	} else if (t->list.t.type == M_GFXTASK && !g_RollbackResim) {
 		videoSubmitCommands((Gfx *)t->list.t.data_ptr);
 	}
 }
 
 void schedStartFrame(OSSched *sc)
 {
-	videoStartFrame();
+	if (!g_RollbackResim) {
+		videoStartFrame();
+	}
 }
 
 void schedAudioFrame(OSSched *sc)
@@ -249,7 +253,9 @@ void schedAudioFrame(OSSched *sc)
 	if (!g_SndDisabled) {
 		for (i = 0; i < g_Vars.diffframe60; i++) {
 			amgrFrame();
-			audioEndFrame();
+			if (!g_RollbackResim) {
+				audioEndFrame();
+			}
 		}
 	}
 }
@@ -288,7 +294,9 @@ void schedEndFrame(OSSched *sc)
 		viHandleRetrace();
 	}
 
-	inputUpdate();
+	if (!g_RollbackResim) {
+		inputUpdate();
+	}
 
 	joyStartReadData(&g_PiMesgQueue);
 	joyReadData();
@@ -297,6 +305,10 @@ void schedEndFrame(OSSched *sc)
 	sndHandleRetrace();
 	schedAudioFrame(sc);
 	schedRenderCrashPeriodically(sc->frameCount);
+	if (g_RollbackResim) {
+		return;
+	}
+
 	videoEndFrame();
 
 	if (g_MainIsBooting == 0) {

@@ -42,5 +42,9 @@ void replayFilterPads(OSContPad *pads, s32 count);
 void replayFilterStatus(OSContStatus *status, s32 count);
 /* after each mainTick */
 void replayEndTick(void);
+/* rollback/SyncTest: the deterministic state hash, and the tick counter (index of the next tick) */
+u64 replayStateHash(void);
+s32 replayGetTick(void);
+void replaySetTick(s32 tick);
 
 #endif

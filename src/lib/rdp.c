@@ -12,7 +12,11 @@ ALIGNED16 u8 g_RdpYieldData[0xb00];
 u16 *g_RdpOutBufferEnd = NULL;
 u16 *g_RdpOutBufferStart = NULL;
 
-struct rdptask g_RdpTaskA = {
+#ifndef PD_SNAPSHOT_OUTSIDE_DATA
+#define PD_SNAPSHOT_OUTSIDE_DATA
+#endif
+// render bookkeeping (holds a stack address from mainTick): kept out of rollback snapshots
+PD_SNAPSHOT_OUTSIDE_DATA struct rdptask g_RdpTaskA = {
 	{
 		// OSScTask
 		NULL,
@@ -35,7 +39,7 @@ struct rdptask g_RdpTaskA = {
 	}
 };
 
-struct rdptask g_RdpTaskB = {
+PD_SNAPSHOT_OUTSIDE_DATA struct rdptask g_RdpTaskB = {
 	{
 		// OSScTask
 		NULL,
