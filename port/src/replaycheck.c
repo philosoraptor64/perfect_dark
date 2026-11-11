@@ -6,6 +6,7 @@
 #include "data.h"
 #include "bss.h"
 #include "types.h"
+#include "constants.h"
 #include "system.h"
 #include "replaycheck.h"
 
@@ -17,6 +18,7 @@ s32 g_ReplayActive = 0;
 extern u64 g_RngSeed;
 extern u64 g_Rng2Seed;
 extern s32 g_StageNum;
+extern float gfx_fixed_aspect; // gfx_pc.cpp
 
 #define REPLAY_PADS 4
 
@@ -31,11 +33,29 @@ static struct replayframe *s_Play = NULL;
 static s32 s_PlayCount = 0;
 static s32 s_MaxTicks = -1;
 static s32 s_Tick = 0; // logic ticks since boot (index of the tick being simulated)
+static s32 s_DumpFrom = -1, s_DumpTo = -1; // PD_REPLAY_DUMP=from:to = per-object lines in the hash log
 
 static const char *envStr(const char *name)
 {
 	const char *v = getenv(name);
 	return (v && v[0]) ? v : NULL;
+}
+
+// a file path from the environment; on iOS a relative path is relative to the app's Documents
+// folder (its absolute path changes with every install)
+static const char *envPath(const char *name)
+{
+	const char *v = envStr(name);
+#ifdef PD_IOS
+	if (v && v[0] != '/') {
+		static char bufs[4][1024];
+		static s32 next = 0;
+		char *b = bufs[next++ & 3];
+		snprintf(b, sizeof(bufs[0]), "%s/Documents/%s", getenv("HOME") ? getenv("HOME") : ".", v);
+		return b;
+	}
+#endif
+	return v;
 }
 
 static void loadPlayback(const char *path)
@@ -100,9 +120,9 @@ static void loadPlayback(const char *path)
 
 void replayInit(void)
 {
-	const char *check = envStr("PD_REPLAY_CHECK");
-	const char *rec = envStr("PD_REPLAY_RECORD");
-	const char *play = envStr("PD_REPLAY_PLAY");
+	const char *check = envPath("PD_REPLAY_CHECK");
+	const char *rec = envPath("PD_REPLAY_RECORD");
+	const char *play = envPath("PD_REPLAY_PLAY");
 	const char *s;
 
 	g_ReplayActive = (check || rec || play) ? 1 : 0;
@@ -114,6 +134,24 @@ void replayInit(void)
 
 	if ((s = envStr("PD_SEED"))) {
 		s_Seed = strtoull(s, NULL, 0);
+	}
+
+	// the camera aspect feeds the simulation (aim rays, on-screen checks), so every device renders the
+	// game at the same aspect, letterboxed (PD_ASPECT=w/h or a number; 0 = window shape, not deterministic)
+	gfx_fixed_aspect = 16.f / 9.f;
+	if ((s = envStr("PD_ASPECT"))) {
+		float w = 0, h = 0;
+		if (sscanf(s, "%f/%f", &w, &h) == 2 && h > 0) {
+			gfx_fixed_aspect = w / h;
+		} else {
+			gfx_fixed_aspect = atof(s);
+		}
+	}
+
+	if ((s = envStr("PD_REPLAY_DUMP"))) {
+		if (sscanf(s, "%d:%d", &s_DumpFrom, &s_DumpTo) != 2) {
+			s_DumpFrom = s_DumpTo = atoi(s);
+		}
 	}
 
 	if ((s = envStr("PD_REPLAY_FRAMES"))) {
@@ -143,7 +181,7 @@ void replayInit(void)
 		}
 	}
 
-	sysLogPrintf(LOG_NOTE, "deterministic mode: fixed step, seed %llu%s%s%s",
+	sysLogPrintf(LOG_NOTE, "deterministic mode: fixed step, aspect %.4f, seed %llu%s%s%s", gfx_fixed_aspect,
 		(unsigned long long)s_Seed, check ? ", hash log" : "", rec ? ", recording" : "", play ? ", playback" : "");
 }
 
@@ -288,6 +326,33 @@ void replayEndTick(void)
 		u64 h = hashState(&numprops);
 		fprintf(s_HashLog, "%d stage %02x lvframe %d props %u rng %016llx hash %016llx\n", s_Tick, g_StageNum,
 			g_Vars.lvframenum, numprops, (unsigned long long)g_RngSeed, (unsigned long long)h);
+	}
+
+	if (s_HashLog && s_Tick >= s_DumpFrom && s_Tick <= s_DumpTo) {
+		// exact values (%a) so two devices' dumps can be diffed
+		for (s32 i = 0; i < MAX_PLAYERS; i++) {
+			struct player *p = g_Vars.players[i];
+			if (p && p->prop) {
+				fprintf(s_HashLog, "  player %d pos %a %a %a theta %a verta %a health %a\n", i, p->prop->pos.x,
+					p->prop->pos.y, p->prop->pos.z, p->vv_theta, p->vv_verta, p->bondhealth);
+			}
+		}
+		for (s32 i = 0; i < g_NumChrSlots; i++) {
+			struct chrdata *c = &g_ChrSlots[i];
+			if (c->prop) {
+				fprintf(s_HashLog, "  chr %d num %d action %d damage %a pos %a %a %a\n", i, c->chrnum, c->actiontype,
+					c->damage, c->prop->pos.x, c->prop->pos.y, c->prop->pos.z);
+			}
+		}
+		s32 n = 0;
+		for (struct prop *pr = g_Vars.activeprops; pr && n < 100000; pr = pr->next, n++) {
+			s32 objtype = -1;
+			if ((pr->type == PROPTYPE_OBJ || pr->type == PROPTYPE_WEAPON || pr->type == PROPTYPE_DOOR) && pr->obj) {
+				objtype = pr->obj->type;
+			}
+			fprintf(s_HashLog, "  prop %d type %d obj %d flags %02x pos %a %a %a\n", n, pr->type, objtype, pr->flags,
+				pr->pos.x, pr->pos.y, pr->pos.z);
+		}
 	}
 
 	s_Tick++;

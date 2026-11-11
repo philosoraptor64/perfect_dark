@@ -57,6 +57,19 @@ Not deterministic yet / to check for netplay: per-player control settings (sensi
 options in pd.ini) must come from the match config; `TickRateDivisor` must be 1 online; camdraw.c func0f14b394
 reads the clock (looks like camera-spy/photo code: verify it can't feed the sim); joy.c pak polling uses the clock.
 
+**Cross-device (2026-11-10): Duo (iPhone19,4) == Mac, 2430 ticks byte-identical** after fixing the aspect: the
+camera aspect fed the simulation (player0f0bd358 scales by videoGetAspect; aim ray through the crosshair, on-screen
+flags), so the first phone run differed in one explosion's position (tick 1037-2075; RNG and prop counts stayed equal),
+and a Mac 640x480 vs 1017x699 run differed the same way. Fix: `gfx_fixed_aspect` (gfx_pc.cpp) renders the game at a
+fixed aspect, centred with black bars (the existing game-window-viewport offsets); deterministic mode sets it to 16:9
+(`PD_ASPECT=w/h` overrides; must come from the match config online). The HUD aspect scale now follows the game
+rectangle, not the window. iOS: replay paths and `--savedir` may be relative = relative to Documents (the container
+path changes with every install). Phone run: copy input.txt + a fresh save folder (pd.ini only, no eeprom.bin) to
+Documents/replay/, then `devicectl device process launch --environment-variables
+'{"PD_SEED":"1","PD_REPLAY_PLAY":"replay/input.txt","PD_REPLAY_CHECK":"replay/phone.hash"}'
+io.github.philosoraptor.perfectdark --savedir replay/save2 --boot-stage 0x30`, it quits by itself (~40 s).
+Also: `PD_REPLAY_DUMP=from:to` writes every player/chr/prop with exact (%a) values for those ticks.
+
 ## Next steps
 1. Human check on the Mac: picture, sound, controller, play a level and Combat Simulator.
 2. Fixed-step mode + seeded RNG behind an env var, then a replay check like

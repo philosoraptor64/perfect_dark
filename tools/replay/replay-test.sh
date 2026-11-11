@@ -31,8 +31,8 @@ mksave() {
         echo "[Video]"
         echo "VSync=$([ "$FAST" = 1 ] && echo 0 || echo 1)"
         echo "DefaultFullscreen=0"
-        echo "DefaultWidth=640"
-        echo "DefaultHeight=480"
+        echo "DefaultWidth=${WIDTH:-640}"
+        echo "DefaultHeight=${HEIGHT:-480}"
     } > "$d/pd.ini"
 }
 

@@ -215,6 +215,10 @@ struct XYWidthHeight gfx_current_game_window_viewport;
 struct XYWidthHeight gfx_current_native_viewport;
 float gfx_current_native_aspect = 4.f / 3.f;
 bool gfx_framebuffers_enabled = true;
+// > 0: the game always renders at this aspect ratio, centred in the window with black bars
+// (netplay/replay: the camera aspect feeds the simulation, so every device must use the same one)
+extern "C" float gfx_fixed_aspect;
+float gfx_fixed_aspect = 0.f;
 bool gfx_detail_textures_enabled = true;
 
 static bool game_renders_to_framebuffer;
@@ -1635,7 +1639,7 @@ static void gfx_sp_geometry_mode(uint32_t clear, uint32_t set) {
 static inline void gfx_update_aspect_mode(void) {
     const uint32_t side = rsp.aspect_mode & G_ASPECT_CENTER_EXT;
 
-    rsp.aspect_scale = rsp.aspect_mode ? gfx_current_native_aspect : gfx_current_window_dimensions.aspect_ratio;
+    rsp.aspect_scale = rsp.aspect_mode ? gfx_current_native_aspect : gfx_current_dimensions.aspect_ratio;
 
     if (side == G_ASPECT_LEFT_EXT) {
         rsp.aspect_ofs = 1.f - gfx_current_dimensions.aspect_ratio / gfx_current_native_aspect;
@@ -2605,6 +2609,27 @@ extern "C" void gfx_start_frame(void) {
 
     gfx_current_game_window_viewport.width = gfx_current_dimensions.width;
     gfx_current_game_window_viewport.height = gfx_current_dimensions.height;
+    gfx_current_game_window_viewport.x = 0;
+    gfx_current_game_window_viewport.y = 0;
+
+    if (gfx_fixed_aspect > 0.f) {
+        // letterbox/pillarbox: the game gets the largest centred rectangle of that aspect
+        uint32_t w = gfx_current_window_dimensions.width, h = gfx_current_window_dimensions.height;
+        if ((float)w / h > gfx_fixed_aspect) {
+            w = (uint32_t)(h * gfx_fixed_aspect + 0.5f);
+        } else {
+            h = (uint32_t)(w / gfx_fixed_aspect + 0.5f);
+        }
+        if (w < 1) w = 1;
+        if (h < 1) h = 1;
+        gfx_current_dimensions.width = w;
+        gfx_current_dimensions.height = h;
+        gfx_current_dimensions.aspect_ratio = gfx_fixed_aspect;
+        gfx_current_game_window_viewport.x = (gfx_current_window_dimensions.width - w) / 2;
+        gfx_current_game_window_viewport.y = (gfx_current_window_dimensions.height - h) / 2;
+        gfx_current_game_window_viewport.width = w;
+        gfx_current_game_window_viewport.height = h;
+    }
 
     if (gfx_current_dimensions.height != gfx_prev_dimensions.height) {
         for (auto& fb : framebuffers) {
