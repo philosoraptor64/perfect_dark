@@ -317,8 +317,10 @@ id<MTLTexture> target_depth(void) {
 
 id<MTLRenderPipelineState> pipeline_for(ShaderProgram* prg) {
     const bool has_depth = target_depth() != nil;
-    const uint64_t key = ((uint64_t)(uintptr_t)prg << 3) | ((uint64_t)has_depth << 2) | ((uint64_t)sUseAlpha << 1) |
-                         (uint64_t)sModulate;
+    id<MTLTexture> color = target_color();
+    const NSUInteger samples = color ? color.sampleCount : 1;
+    const uint64_t key = ((uint64_t)(uintptr_t)prg << 8) | ((uint64_t)samples << 3) | ((uint64_t)has_depth << 2) |
+                         ((uint64_t)sUseAlpha << 1) | (uint64_t)sModulate;
     __strong id<MTLRenderPipelineState>& ps = sPipelines[key];
     if (!ps) {
         MTLRenderPipelineDescriptor* d = [MTLRenderPipelineDescriptor new];
@@ -326,6 +328,7 @@ id<MTLRenderPipelineState> pipeline_for(ShaderProgram* prg) {
         d.fragmentFunction = prg->fragment_fn;
         d.colorAttachments[0].pixelFormat = sLayer.pixelFormat;
         d.depthAttachmentPixelFormat = has_depth ? MTLPixelFormatDepth32Float : MTLPixelFormatInvalid;
+        d.rasterSampleCount = samples;
         if (sUseAlpha) {
             MTLRenderPipelineColorAttachmentDescriptor* c = d.colorAttachments[0];
             c.blendingEnabled = YES;
@@ -619,23 +622,39 @@ void gfx_metal_update_framebuffer_parameters(int fb_id, uint32_t width, uint32_t
     width = std::max(width, 1u);
     height = std::max(height, 1u);
     if (fb_id != 0) {
-        // M6b: MSAA. For now every offscreen target is single-sampled.
-        if (!fb.color || fb.color.width != width || fb.color.height != height) {
+        // MSAA targets are multisampled textures; they are never sampled directly (resolve first).
+        uint32_t samples = std::max(1u, msaa_level);
+        while (samples > 1 && ![sDevice supportsTextureSampleCount:samples]) {
+            samples >>= 1;
+        }
+        if (!fb.color || fb.color.width != width || fb.color.height != height || fb.color.sampleCount != samples) {
             MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                                                          width:width
                                                                                         height:height
                                                                                      mipmapped:NO];
             d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
             d.storageMode = MTLStorageModePrivate;
+            if (samples > 1) {
+                d.textureType = MTLTextureType2DMultisample;
+                d.sampleCount = samples;
+            }
             fb.color = [sDevice newTextureWithDescriptor:d];
             fb.depth = nil;
-            sTextures[kFbTextureBase + fb_id] = { fb.color, sLinearClampSampler };
+            if (samples > 1) {
+                sTextures.erase(kFbTextureBase + fb_id);
+            } else {
+                sTextures[kFbTextureBase + fb_id] = { fb.color, sLinearClampSampler };
+            }
         }
         if (has_depth_buffer && !fb.depth) {
             MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
                                                                                          width:width
                                                                                         height:height
                                                                                      mipmapped:NO];
+            if (samples > 1) {
+                d.textureType = MTLTextureType2DMultisample;
+                d.sampleCount = samples;
+            }
             d.usage = MTLTextureUsageRenderTarget;
             d.storageMode = MTLStorageModePrivate;
             fb.depth = [sDevice newTextureWithDescriptor:d];
@@ -670,6 +689,10 @@ bool gfx_metal_start_draw_to_framebuffer(int fb_id, float noise_scale) {
     return true;
 }
 
+void resolve_into(id<MTLCommandBuffer> cmd, id<MTLTexture> msaa, id<MTLTexture> dst);
+id<MTLTexture> resolve_temp(NSUInteger w, NSUInteger h);
+void scaled_copy(id<MTLCommandBuffer> cmd, id<MTLTexture> src, id<MTLTexture> dst);
+
 id<MTLTexture> fb_color(int fb_id) {
     if (fb_id == 0) {
         return sDrawable ? sDrawable.texture : nil;
@@ -695,6 +718,12 @@ void gfx_metal_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool 
         sEnc = nil;
     }
     id<MTLCommandBuffer> cmd = in_frame ? sCmd : [sQueue commandBuffer];
+    if (src.sampleCount > 1) {
+        // GL's glBlitFramebuffer resolves implicitly; Metal needs an explicit resolve first.
+        id<MTLTexture> tmp = resolve_temp(src.width, src.height);
+        resolve_into(cmd, src, tmp);
+        src = tmp;
+    }
     const int sw = (int)src.width, sh = (int)src.height, dw = (int)dst.width, dh = (int)dst.height;
     if (left >= 0 && top >= 0) {
         // Unscaled rectangle at (left, top) in GL bottom-left coordinates -> Metal top-left.
@@ -715,20 +744,8 @@ void gfx_metal_copy_framebuffer(int fb_dst, int fb_src, int left, int top, bool 
                 destinationOrigin:MTLOriginMake(0, 0, 0)];
             [blit endEncoding];
         }
-    } else if (sCopyPipeline) {
-        // Scaled full copy.
-        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.colorAttachments[0].texture = dst;
-        pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
-        const float rect[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
-        [enc setRenderPipelineState:sCopyPipeline];
-        [enc setVertexBytes:rect length:sizeof(rect) atIndex:0];
-        [enc setFragmentTexture:src atIndex:0];
-        [enc setFragmentSamplerState:sLinearClampSampler atIndex:0];
-        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-        [enc endEncoding];
+    } else {
+        scaled_copy(cmd, src, dst); // scaled full copy
     }
     if (in_frame) {
         begin_pass(false, false); // resume the current target
@@ -743,7 +760,67 @@ void gfx_metal_clear_framebuffer(bool clear_color, bool clear_depth) {
     }
 }
 
+// Resolves a multisampled texture into a single-sampled one of the same size (render pass resolve).
+void resolve_into(id<MTLCommandBuffer> cmd, id<MTLTexture> msaa, id<MTLTexture> dst) {
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = msaa;
+    pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve;
+    pass.colorAttachments[0].resolveTexture = dst;
+    [[cmd renderCommandEncoderWithDescriptor:pass] endEncoding];
+}
+
+id<MTLTexture> sResolveTemp; // single-sampled scratch for resolves/copies of a different size
+
+id<MTLTexture> resolve_temp(NSUInteger w, NSUInteger h) {
+    if (!sResolveTemp || sResolveTemp.width != w || sResolveTemp.height != h) {
+        MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                     width:w
+                                                                                    height:h
+                                                                                 mipmapped:NO];
+        d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        d.storageMode = MTLStorageModePrivate;
+        sResolveTemp = [sDevice newTextureWithDescriptor:d];
+    }
+    return sResolveTemp;
+}
+
+void scaled_copy(id<MTLCommandBuffer> cmd, id<MTLTexture> src, id<MTLTexture> dst) {
+    if (!sCopyPipeline) {
+        return;
+    }
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = dst;
+    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
+    const float rect[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    [enc setRenderPipelineState:sCopyPipeline];
+    [enc setVertexBytes:rect length:sizeof(rect) atIndex:0];
+    [enc setFragmentTexture:src atIndex:0];
+    [enc setFragmentSamplerState:sLinearClampSampler atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+}
+
 void gfx_metal_resolve_msaa_color_buffer(int fb_id_target, int fb_id_source) {
+    id<MTLTexture> src = fb_color(fb_id_source);
+    id<MTLTexture> dst = fb_color(fb_id_target);
+    if (!sCmd || !src || !dst || src.sampleCount <= 1 || dst.sampleCount > 1) {
+        return;
+    }
+    if (sEnc) {
+        [sEnc endEncoding];
+        sEnc = nil;
+    }
+    if (src.width == dst.width && src.height == dst.height) {
+        resolve_into(sCmd, src, dst);
+    } else {
+        id<MTLTexture> tmp = resolve_temp(src.width, src.height);
+        resolve_into(sCmd, src, tmp);
+        scaled_copy(sCmd, tmp, dst);
+    }
+    begin_pass(false, false);
 }
 
 void* gfx_metal_get_framebuffer_texture_id(int fb_id) {
