@@ -201,7 +201,14 @@ Steps:
       ```
       -> `build-ios/pd.arm64.app` (Mach-O arm64, LC_BUILD_VERSION platform 2 = iOS, minos 17.0).
       (On the MacBook, i64's deps-out/ios SDL should work too.)
-- [ ] M7b. (next, MacBook: it can sign) Sign + install: either `-G Xcode` (untested for this CMake) with
+- [x] M7b. Signed + installed on both iPhones (2026-11-10, MacBook; NOT yet launched). Built with the Ninja command
+      above but SDL from SpaghettiKart's `build-ios/_deps` (UIScene patch). Profile: a throwaway XcodeGen stub app with
+      bundle id io.github.philosoraptor.perfectdark built once with `-allowProvisioningUpdates` (existing certificate,
+      no new one); then copy the stub's `embedded.mobileprovision` into pd.arm64.app, take its entitlements
+      (`codesign -d --entitlements :- --xml <stub.app>`) and `codesign --force --sign <cert sha1> --entitlements ent.plist
+      --generate-entitlement-der pd.arm64.app`; `devicectl device install app`; ROM copied to Documents/pd.ntsc-final.z64.
+      The profile lasts 7 days (free team). Old M7b text:
+- [ ] (old) M7b. (next, MacBook: it can sign) Sign + install: either `-G Xcode` (untested for this CMake) with
       DEVELOPMENT_TEAM + `-allowProvisioningUpdates`, or sign the Ninja-built .app with a profile for
       io.github.philosoraptor.perfectdark. NEVER create a new Apple Development certificate. Copy the ROM to
       Documents (`devicectl device copy to --domain-type appDataContainer ... --destination Documents/pd.ntsc-final.z64`).
