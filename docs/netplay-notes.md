@@ -157,6 +157,14 @@ the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** 
   checks): 40+20 jitter+5% loss at delay 1: rollback delay 3, 55-64 rollbacks (max 3), stalls ~0.4 s vs lockstep
   delay 6 (100 ms input lag); 80+30+5%: delay 3, 87 rollbacks (max 7), stalls ~1.1 s (RTT ~210 ms exceeds the
   8-tick window; try PD_NET_ROLLBACK_WINDOW=12 on bad links).
+- **Room codes (2026-11-11):** `PD_NET_SERVER=host:port` (+ `PD_NET_ROOM`, `PD_NET_PASSWORD`, `PD_NET_INVITE`,
+  `PD_NET_RELAY=1`, `PD_NET_WAIT_SECS`, host: `PD_NET_HOST=1`) uses n64net_rendezvous on the game socket (any free
+  port), then the usual handshake. Game id `pd-<romid>+<VERSION_HASH>` (only equal builds pair; the error
+  "version" becomes a plain message). n64net_rendezvous.cpp is compiled in. Pair test `SERVER=local [RELAY=1]`
+  (starts external/n64net/server/rendezvous.py on 127.0.0.1:7790): direct and relayed IN SYNC. The real room
+  server runs on the Studio (UDP 7780, password): never write its address or password into the repo. Phone
+  netplay.cfg example: PD_NET_SERVER=<server>:7780, PD_NET_PASSWORD=..., PD_NET_ROOM=ABCD, PD_NET_HOST=1 (host)
+  + PD_BOOT_STAGE / PD_SEED / PD_REPLAY_BOTS equal on both.
 - Next: (a) the Mac <-> phone test above; (b) one full-screen view per
   device (as MK did) instead of split screen; (c) rollback (snapshots: globals + memp/mema heaps); (d) rendezvous
   (room codes) via n64net_rendezvous; (e) host picks the match in the real menus (like the Smash/MK sessions).

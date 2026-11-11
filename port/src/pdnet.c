@@ -17,6 +17,7 @@
 #include "snapshot.h"
 #include "replaycheck.h"
 #include "n64net_input.h"
+#include "n64net_rendezvous.h"
 
 /* See pdnet.h. Lockstep (rollback window 0) through n64net_input. */
 
@@ -269,7 +270,12 @@ static void loadConfigFile(void)
 s32 pdnetWanted(void)
 {
 	loadConfigFile();
-	return envStr("PD_NET_HOST") || envStr("PD_NET_PEER");
+	return envStr("PD_NET_HOST") || envStr("PD_NET_PEER") || envStr("PD_NET_SERVER");
+}
+
+static void rendezvousYield(void)
+{
+	usleep(1000);
 }
 
 s32 pdnetActive(void)
@@ -286,7 +292,8 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	}
 
 	s_IsHost = envStr("PD_NET_HOST") && atoi(envStr("PD_NET_HOST")) != 0;
-	s32 port = s_IsHost ? 7301 : 7302;
+	const char *server = envStr("PD_NET_SERVER");
+	s32 port = server ? 0 : (s_IsHost ? 7301 : 7302); // room codes: any free port
 	if ((s = envStr("PD_NET_PORT"))) {
 		port = atoi(s);
 	}
@@ -306,7 +313,7 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 			s_SimJitterMs, s_SimLossPct);
 	}
 
-	if (!s_IsHost) {
+	if (!s_IsHost && !server) {
 		char host[128];
 		s32 peerport = 7301;
 		const char *peer = envStr("PD_NET_PEER");
@@ -340,6 +347,42 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 		sysFatalError("netplay: can't bind UDP port %d: %s", port, strerror(errno));
 	}
 	fcntl(s_Sock, F_SETFL, fcntl(s_Sock, F_GETFL, 0) | O_NONBLOCK);
+
+	if (server) {
+		// room codes: the room server pairs us with the other player (hole punching, relay as a fallback)
+		char game[96];
+#ifdef VERSION_HASH
+		snprintf(game, sizeof(game), "pd-%s+%s", VERSION_ROMID, VERSION_HASH);
+#else
+		snprintf(game, sizeof(game), "pd-%s+dev", VERSION_ROMID);
+#endif
+		N64NetRendezvousConfig rc;
+		memset(&rc, 0, sizeof(rc));
+		rc.server = server;
+		rc.game = game;
+		rc.room = envStr("PD_NET_ROOM");
+		rc.password = envStr("PD_NET_PASSWORD");
+		rc.invite_pass = envStr("PD_NET_INVITE");
+		rc.is_host = s_IsHost;
+		rc.force_relay = envStr("PD_NET_RELAY") && atoi(envStr("PD_NET_RELAY")) != 0;
+		rc.wait_secs = envStr("PD_NET_WAIT_SECS") ? atoi(envStr("PD_NET_WAIT_SECS")) : 600;
+		rc.log = netLog;
+		rc.yield = rendezvousYield;
+		N64NetRendezvousResult res;
+		memset(&res, 0, sizeof(res));
+		sysLogPrintf(LOG_NOTE, "netplay: %s room %s on %s", s_IsHost ? "hosting" : "joining",
+			rc.room ? rc.room : "(new)", server);
+		if (n64net_rendezvous_connect(s_Sock, &rc, &res) != 0) {
+			if (!strncmp(res.error, "version", 7)) {
+				sysFatalError("Netplay: the other player has a different build of the game.\n"
+					"Both players need the same version.");
+			}
+			sysFatalError("Netplay: couldn't connect through the room server (%s).", res.error);
+		}
+		s_Peer = res.peer;
+		s_HavePeer = 1;
+		sysLogPrintf(LOG_NOTE, "netplay: room %s, %s connection", res.room, res.relayed ? "relayed" : "direct");
+	}
 
 	// everything that must be equal on both machines
 	u64 h = 0xcbf29ce484222325ull;
