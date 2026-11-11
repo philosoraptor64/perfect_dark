@@ -145,6 +145,18 @@ the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** 
   - Test tips: on the Studio Core Audio is wedged by the remote-desktop audio driver: run tests with
     `SDL_AUDIODRIVER=dummy SDL_AUDIO_DRIVER=dummy` (--no-sound still opens the device). lldb works with that too
     (hardware watchpoints found the texture-list bug). stdout is block-buffered into files: crash logs lose tails.
+- **Rollback netplay WORKS on the Mac (2026-11-11), default on (`PD_NET_ROLLBACK=0` = lockstep):** pdnet.c +
+  n64net's rollback driver. Lockstep until `PD_NET_ROLLBACK_FROM` (60) ticks, then window
+  `PD_NET_ROLLBACK_WINDOW` (8); auto delay min..3 (lockstep min..6). Rollback point = rollback.c
+  rollbackAfterTick -> pdnetRollbackPoint: n64net_rollback_frame with save/load = snapshotSave/Load (16 slots;
+  load also sets the replay tick) and advance = rollbackStep (g_RollbackResim); pdnetFilterPads returns ledger
+  inputs while resimulating. Sync checks: hash of the state before tick t, refreshed by every resimulated step,
+  recorded once t - 1 <= confirmed tick. Time sync: pdmain.c skips a frame (16 ms) when
+  n64net_timesync_should_skip. Test aid: `PD_NET_SIM_LATENCY/_JITTER` (ms) `/_LOSS` (%) on sent packets;
+  pair-test.sh LATENCY/JITTER/LOSS/ROLLBACK. Results (1800 ticks, Skedar + 2 simulants, bots, all IN SYNC 60
+  checks): 40+20 jitter+5% loss at delay 1: rollback delay 3, 55-64 rollbacks (max 3), stalls ~0.4 s vs lockstep
+  delay 6 (100 ms input lag); 80+30+5%: delay 3, 87 rollbacks (max 7), stalls ~1.1 s (RTT ~210 ms exceeds the
+  8-tick window; try PD_NET_ROLLBACK_WINDOW=12 on bad links).
 - Next: (a) the Mac <-> phone test above; (b) one full-screen view per
   device (as MK did) instead of split screen; (c) rollback (snapshots: globals + memp/mema heaps); (d) rendezvous
   (room codes) via n64net_rendezvous; (e) host picks the match in the real menus (like the Smash/MK sessions).

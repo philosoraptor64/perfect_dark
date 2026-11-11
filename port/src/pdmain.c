@@ -509,6 +509,11 @@ void mainLoop(void)
 		while (g_MainChangeToStageNum < 0) {
 			const s32 cycles = osGetCount() - g_Vars.thisframestartt;
 			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
+				if (pdnetTimeSyncSkip()) {
+					// netplay time sync: this side is ahead, let the other one catch up for a frame
+					sysSleep(160000); // 16 ms (units of 100 ns)
+					continue;
+				}
 				schedStartFrame(&g_Sched);
 				mainTick();
 				replayEndTick();

@@ -8,6 +8,7 @@
 #include "snapshot.h"
 #include "replaycheck.h"
 #include "rollback.h"
+#include "pdnet.h"
 #include "types.h"
 
 /* See rollback.h. */
@@ -143,6 +144,8 @@ void rollbackAfterTick(void)
 {
 	if (s_SyncTest) {
 		syncTestPoint();
+	} else if (pdnetRollbackActive()) {
+		pdnetRollbackPoint();
 	}
 }
 

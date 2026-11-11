@@ -22,6 +22,8 @@
  *   PD_NET_WAIT_SECS=n       how long to wait for the other machine (default 60)
  *   PD_NET_VIEW=split        both players split screen on both machines (default: each machine shows its
  *                            own player full screen; every player is simulated with the full-screen view)
+ *   PD_NET_ROLLBACK=0        lockstep instead of rollback (default: rollback after PD_NET_ROLLBACK_FROM=60
+ *                            ticks, window PD_NET_ROLLBACK_WINDOW=8)
  *   PD_NET_TEST_DESYNC=tick  test aid: corrupt this side's RNG at that tick (sync check must report it)
  * On the iPhone (no environment variables) the same KEY=VALUE lines go in Documents/netplay.cfg; on other
  * machines PD_NET_CONFIG=<file> reads such a file. The environment wins over the file.
@@ -37,6 +39,12 @@ s32 pdnetActive(void);
 /* osContGetReadData: replaces pads 1-2 with the exchanged inputs for the current tick */
 void pdnetFilterPads(OSContPad *pads, s32 count, s32 tick);
 void pdnetFilterStatus(OSContStatus *status, s32 count);
+/* rollback netplay (PD_NET_ROLLBACK, default on; PD_NET_ROLLBACK_WINDOW=8, PD_NET_ROLLBACK_FROM=60 = lockstep
+ * before that tick): called at the rollback point (rollback.c) */
+s32 pdnetRollbackActive(void);
+void pdnetRollbackPoint(void);
+/* once per displayed frame: 1 = skip this frame's game step (time sync, this side is ahead) */
+s32 pdnetTimeSyncSkip(void);
 /* scripted test input (PD_NET_BOT, PD_TEST_BOT) */
 void pdnetBotPad(s32 tick, u32 seed, OSContPad *pad);
 /* after each simulated tick, with the deterministic state hash */

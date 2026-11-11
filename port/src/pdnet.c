@@ -13,6 +13,9 @@
 #include "platform.h"
 #include "system.h"
 #include "pdnet.h"
+#include "rollback.h"
+#include "snapshot.h"
+#include "replaycheck.h"
 #include "n64net_input.h"
 
 /* See pdnet.h. Lockstep (rollback window 0) through n64net_input. */
@@ -41,6 +44,18 @@ static OSContPad s_TickPads[2];
 static u64 s_StallUsecs = 0;
 static u32 s_Stalls = 0;
 static s32 s_DesyncReported = 0;
+
+// rollback (PD_NET_ROLLBACK=1, the default; 0 = lockstep)
+#define PDNET_SLOTS 16
+#define PDNET_HASH_RING 64
+static s32 s_Rollback = 0;
+static u32 s_RollbackWindow = 8;
+static s32 s_RollbackFrom = 60;     // ticks before this run in lockstep (match start)
+static s32 s_WindowOpen = 0;
+static u64 s_TickHash[PDNET_HASH_RING]; // state hash before tick t (refreshed by every resimulation)
+static s32 s_TickHashValid[PDNET_HASH_RING];
+static s32 s_LastSyncRecorded = -1;
+static u32 s_Rollbacks = 0, s_RollbackTicks = 0, s_MaxDepth = 0, s_Skips = 0;
 
 static const char *envStr(const char *name)
 {
@@ -78,12 +93,68 @@ static void netLog(const char *fmt, ...)
 	sysLogPrintf(LOG_NOTE, "%s", buf);
 }
 
-static void netSend(void *user, const uint8_t *data, uint32_t size)
+/* Test aid: simulated bad link on our outgoing packets (PD_NET_SIM_LATENCY / _JITTER in ms, _LOSS in %). */
+#define SIM_QUEUE 1024
+struct simpacket {
+	u64 at;
+	u32 size;
+	u8 data[512];
+};
+static struct simpacket *s_SimQueue = NULL;
+static s32 s_SimHead = 0, s_SimCount = 0;
+static u32 s_SimLatencyMs = 0, s_SimJitterMs = 0, s_SimLossPct = 0;
+static u32 s_SimRand = 0x12345678;
+
+static u32 simRand(void)
 {
-	(void)user;
+	s_SimRand = s_SimRand * 1103515245u + 12345u;
+	return s_SimRand >> 8;
+}
+
+static void rawSend(const uint8_t *data, uint32_t size)
+{
 	if (s_Sock >= 0 && s_HavePeer) {
 		sendto(s_Sock, data, size, 0, (struct sockaddr *)&s_Peer, sizeof(s_Peer));
 	}
+}
+
+static void simFlush(void)
+{
+	const u64 now = nowUsecs();
+	// the queue is in send order; jitter may make a later packet due earlier: deliver every due packet
+	for (s32 i = 0; i < s_SimCount;) {
+		struct simpacket *p = &s_SimQueue[(s_SimHead + i) % SIM_QUEUE];
+		if (p->at <= now) {
+			rawSend(p->data, p->size);
+			// remove by moving the head entry into this place
+			*p = s_SimQueue[s_SimHead];
+			s_SimHead = (s_SimHead + 1) % SIM_QUEUE;
+			s_SimCount--;
+		} else {
+			i++;
+		}
+	}
+}
+
+static void netSend(void *user, const uint8_t *data, uint32_t size)
+{
+	(void)user;
+	if (!s_SimLatencyMs && !s_SimJitterMs && !s_SimLossPct) {
+		rawSend(data, size);
+		return;
+	}
+	if (s_SimLossPct && simRand() % 100 < s_SimLossPct) {
+		return;
+	}
+	if (s_SimCount >= SIM_QUEUE || size > sizeof(s_SimQueue[0].data)) {
+		rawSend(data, size);
+		return;
+	}
+	struct simpacket *p = &s_SimQueue[(s_SimHead + s_SimCount) % SIM_QUEUE];
+	p->at = nowUsecs() + (u64)s_SimLatencyMs * 1000 + (s_SimJitterMs ? (u64)(simRand() % (s_SimJitterMs * 1000)) : 0);
+	p->size = size;
+	memcpy(p->data, data, size);
+	s_SimCount++;
 }
 
 static void sendHandshake(u8 type)
@@ -101,6 +172,10 @@ static s32 pollSocket(void)
 {
 	s32 started = 0;
 	u8 buf[1500];
+
+	if (s_SimCount) {
+		simFlush();
+	}
 
 	for (;;) {
 		struct sockaddr_in from;
@@ -221,6 +296,15 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	if ((s = envStr("PD_NET_WAIT_SECS"))) {
 		s_WaitSecs = atoi(s);
 	}
+	if ((s = envStr("PD_NET_SIM_LATENCY"))) s_SimLatencyMs = (u32)atoi(s);
+	if ((s = envStr("PD_NET_SIM_JITTER"))) s_SimJitterMs = (u32)atoi(s);
+	if ((s = envStr("PD_NET_SIM_LOSS"))) s_SimLossPct = (u32)atoi(s);
+	if (s_SimLatencyMs || s_SimJitterMs || s_SimLossPct) {
+		s_SimQueue = calloc(SIM_QUEUE, sizeof(*s_SimQueue));
+		s_SimRand ^= (u32)port;
+		sysLogPrintf(LOG_NOTE, "netplay: simulating %u ms + %u ms jitter, %u%% loss on sent packets", s_SimLatencyMs,
+			s_SimJitterMs, s_SimLossPct);
+	}
 
 	if (!s_IsHost) {
 		char host[128];
@@ -278,12 +362,24 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	if ((s = envStr("PD_NET_DELAY"))) {
 		cfg.input_delay = (u32)atoi(s);
 	}
-	cfg.rollback_window = 0; // lockstep
+	s_Rollback = !(envStr("PD_NET_ROLLBACK") && atoi(envStr("PD_NET_ROLLBACK")) == 0) && snapshotSupported();
+	if ((s = envStr("PD_NET_ROLLBACK_WINDOW"))) {
+		s_RollbackWindow = (u32)atoi(s);
+	}
+	if ((s = envStr("PD_NET_ROLLBACK_FROM"))) {
+		s_RollbackFrom = atoi(s);
+	}
+	cfg.rollback_window = 0; // lockstep until s_RollbackFrom (match start), then s_RollbackWindow
 	cfg.ticks_per_second = 60;
 	cfg.send = netSend;
 	cfg.log = netLog;
 	s_Net = n64net_input_create(&cfg);
-	n64net_input_set_auto_delay(s_Net, cfg.input_delay, 6);
+	// rollback hides most latency: keep the delay low; lockstep needs more to avoid stalls
+	n64net_input_set_auto_delay(s_Net, cfg.input_delay, s_Rollback ? 3 : 6);
+	if (s_Rollback) {
+		snapshotInit(PDNET_SLOTS);
+		rollbackEnableRoomCache(); // before the stage loads its rooms
+	}
 
 	sysLogPrintf(LOG_NOTE, "netplay: %s on UDP %d, waiting up to %d s for the %s", s_IsHost ? "host" : "guest", port,
 		s_WaitSecs, s_IsHost ? "guest" : "host");
@@ -310,8 +406,8 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	g_NetLocalPlayer = s_IsHost ? 0 : 1;
 	// one full-screen view per machine (PD_NET_VIEW=split = classic split screen on both)
 	g_NetFullViews = !(envStr("PD_NET_VIEW") && strcmp(envStr("PD_NET_VIEW"), "split") == 0);
-	sysLogPrintf(LOG_NOTE, "netplay: connected as player %d (lockstep, input delay %u)", s_IsHost ? 1 : 2,
-		cfg.input_delay);
+	sysLogPrintf(LOG_NOTE, "netplay: connected as player %d (%s, input delay %u)", s_IsHost ? 1 : 2,
+		s_Rollback ? "rollback" : "lockstep", cfg.input_delay);
 }
 
 /* PD_NET_BOT / PD_TEST_BOT: wanders, turns, aims with the right stick and fires in bursts (deterministic per tick). */
@@ -395,9 +491,18 @@ void pdnetFilterPads(OSContPad *pads, s32 count, s32 tick)
 		return;
 	}
 
-	pollSocket();
+	if (g_RollbackResim) {
+		// resimulation: the ledger's inputs for that tick (confirmed or the newest prediction)
+		for (s32 p = 0; p < 2; p++) {
+			n64net_pad n;
+			n64net_input_get(s_Net, p, (u32)tick, &n);
+			fromNet(&n, &s_TickPads[p]);
+		}
+	} else {
+		pollSocket();
+	}
 
-	if (tick != s_LastTick) {
+	if (!g_RollbackResim && tick != s_LastTick) {
 		// the local player's physical controller is always controller 1
 		OSContPad local = pads[0];
 		if (s_BotSeed) {
@@ -458,8 +563,8 @@ void pdnetEndTick(s32 tick, u64 hash)
 		sysLogPrintf(LOG_WARNING, "netplay: test desync injected at tick %d", tick);
 	}
 
-	// lockstep: every simulated tick is confirmed
-	if (tick % PDNET_SYNC_EVERY == 0) {
+	// lockstep: every simulated tick is confirmed (rollback records confirmed ticks in pdnetRollbackPoint)
+	if (!s_Rollback && tick % PDNET_SYNC_EVERY == 0) {
 		n64net_sync_record(s_Net, (u32)tick, 0, (u32)(hash ^ (hash >> 32)));
 	}
 
@@ -474,9 +579,96 @@ void pdnetEndTick(s32 tick, u64 hash)
 		n64net_input_stats st;
 		n64net_input_get_stats(s_Net, &st);
 		sysLogPrintf(LOG_NOTE,
-			"netplay: tick %d, sync checks matched %u%s, stalls %u (%.2f s), delay %u, rtt avg %u ms max %u ms",
+			"netplay: tick %d, sync checks matched %u%s, stalls %u (%.2f s), delay %u, rtt avg %u ms max %u ms, "
+			"rollbacks %u (%u ticks, max %u), skips %u, save %.2f ms",
 			tick, n64net_sync_matched(s_Net), s_DesyncReported ? " (DESYNC)" : "", s_Stalls,
 			(double)s_StallUsecs / 1e6, n64net_input_get_delay(s_Net), st.rtt_avg_usecs / 1000,
-			st.rtt_max_usecs / 1000);
+			st.rtt_max_usecs / 1000, s_Rollbacks, s_RollbackTicks, s_MaxDepth, s_Skips, snapshotLastSaveMs());
 	}
+}
+
+/* --- Rollback ------------------------------------------------------------- */
+
+static void cbSave(void *user, uint32_t slot)
+{
+	(void)user;
+	snapshotSave((s32)slot);
+}
+
+static void cbLoad(void *user, uint32_t slot)
+{
+	(void)user;
+	snapshotLoad((s32)slot);
+	replaySetTick((s32)n64net_rollback_callback_tick(s_Net)); // the state before that tick
+}
+
+static void cbAdvance(void *user)
+{
+	(void)user;
+	rollbackStep();
+	const s32 t = replayGetTick();
+	s_TickHash[t % PDNET_HASH_RING] = replayStateHash();
+	s_TickHashValid[t % PDNET_HASH_RING] = t;
+}
+
+s32 pdnetRollbackActive(void)
+{
+	return s_Active && s_Rollback;
+}
+
+void pdnetRollbackPoint(void)
+{
+	const s32 tick = replayGetTick(); // the state now is "before tick `tick`"
+
+	if (!s_WindowOpen && tick >= s_RollbackFrom) {
+		n64net_input_set_window(s_Net, s_RollbackWindow);
+		s_WindowOpen = 1;
+	}
+
+	n64net_rollback_callbacks cb;
+	memset(&cb, 0, sizeof(cb));
+	cb.save = cbSave;
+	cb.load = cbLoad;
+	cb.advance = cbAdvance;
+	cb.slot_count = PDNET_SLOTS;
+
+	g_RollbackResim = 1;
+	const int depth = n64net_rollback_frame(s_Net, (uint32_t)tick, &cb);
+	g_RollbackResim = 0;
+
+	if (depth > 0) {
+		s_Rollbacks++;
+		s_RollbackTicks += (u32)depth;
+		if ((u32)depth > s_MaxDepth) s_MaxDepth = (u32)depth;
+	} else if (depth < 0) {
+		sysLogPrintf(LOG_ERROR, "netplay: rollback needed a state older than the snapshot ring");
+	}
+
+	s_TickHash[tick % PDNET_HASH_RING] = replayStateHash();
+	s_TickHashValid[tick % PDNET_HASH_RING] = tick;
+
+	// sync checks on confirmed states: the state before tick t is final once inputs up to t - 1 are confirmed
+	const uint32_t confirmed = n64net_input_confirmed_tick(s_Net);
+	if (confirmed != UINT32_MAX) {
+		for (s32 t = s_LastSyncRecorded + 1; t <= (s32)confirmed + 1 && t <= tick; t++) {
+			if (t % PDNET_SYNC_EVERY == 0 && s_TickHashValid[t % PDNET_HASH_RING] == t) {
+				const u64 h = s_TickHash[t % PDNET_HASH_RING];
+				n64net_sync_record(s_Net, (u32)t, 0, (u32)(h ^ (h >> 32)));
+			}
+			s_LastSyncRecorded = t;
+		}
+	}
+}
+
+s32 pdnetTimeSyncSkip(void)
+{
+	if (!s_Active || !s_Rollback || !s_WindowOpen) {
+		return 0;
+	}
+	pollSocket();
+	if (n64net_timesync_should_skip(s_Net)) {
+		s_Skips++;
+		return 1;
+	}
+	return 0;
 }
