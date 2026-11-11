@@ -419,3 +419,18 @@ netplay.cfg, Metal on iOS, the UIScene app) plus Mac <-> iOS netplay over 127.0.
   Mac waited 30.5 s, then IN SYNC to the end. SDL does deliver WILLENTERBACKGROUND/DIDENTERFOREGROUND here
   (logged as `app: ...`). Caveat: if iOS kills the app while it's in the background, the other player waits until
   they quit (no signal is possible then).
+
+## Online from the menus (2026-11-11, Studio; IN PROGRESS)
+- Done + tested: `pdnetOnlineHost/Join` connect on a background thread while the game runs; once connected both
+  games restore the boot state (snapshotSaveBoot at the first main-loop iteration; pd.ini settings keep their
+  current values via configKeepValues/RestoreValues), switch to deterministic mode with the host's seed
+  (replayBeginOnline) and restart at the title. `LATE=4,9 tools/net/pair-test.sh` (also with a damaged guest save,
+  and host connecting after 40 s at the title): IN SYNC. n64net rendezvous gained a cancel flag (39dccc9).
+  Boot-time connect now needs PD_NET_HOST, PD_NET_PEER or PD_NET_SERVER+PD_NET_ROOM (a server alone = menu default).
+- Written, builds, NOT yet seen on screen: port/src/onlinemenu.c ("Play Online" in the Perfect Menu, hidden during
+  online games): Host a Game (room code + waiting screen, Cancel), Join a Game (4-letter keyboard), Room Server...
+  (keyboard: "address port"; pd.ini [Net] Server/Password/LastRoom). Next: drive it with
+  scratchpad-style PD_REPLAY_PLAY input (a fresh save stops at "Choose Your Reality" -> pick New Agent, name, then
+  START in CI opens the Perfect Menu; "Play Online" is the 7th item), screenshot with tools/metal/winid.swift +
+  `screencapture -l`, check the multi-line status label layout; then iOS invite link (URL scheme -> Net.Server/
+  Password, `xcrun simctl openurl` to test).

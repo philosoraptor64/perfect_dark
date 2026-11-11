@@ -69,6 +69,7 @@ void pdnetOnlineCancel(void);
 void pdnetOnlineDismiss(void);   /* after a failure: back to idle */
 s32 pdnetOnlineState(void);
 const char *pdnetOnlineRoom(void);
+s32 pdnetOnlineIsHost(void);
 const char *pdnetOnlineError(void);
 /* game thread: 1 = connected, leave the current stage now (every frame) */
 s32 pdnetOnlinePoll(void);

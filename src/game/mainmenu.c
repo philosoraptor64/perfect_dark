@@ -41,6 +41,7 @@ struct menudialogdef g_CiControlPlayer2MenuDialog;
 struct menudialogdef g_CinemaMenuDialog;
 #ifndef PLATFORM_N64
 extern struct menudialogdef g_ExtendedMenuDialog;
+MenuItemHandlerResult menuhandlerMainMenuPlayOnline(s32 operation, struct menuitem *item, union handlerdata *data);
 #endif
 
 char *menuTextCurrentStageName(struct menuitem *item)
@@ -4951,6 +4952,14 @@ struct menuitem g_MainMenuMenuItems[] = {
 		(void *)&g_ChangeAgentMenuDialog,
 	},
 #ifndef PLATFORM_N64
+	{
+		MENUITEMTYPE_SELECTABLE,
+		0,
+		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+		(uintptr_t)"Play Online",
+		0x00000008,
+		menuhandlerMainMenuPlayOnline, // port/src/onlinemenu.c
+	},
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

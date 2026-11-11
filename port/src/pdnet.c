@@ -415,7 +415,8 @@ s32 pdnetWanted(void)
 	if (envStr("PD_NET_LATE")) {
 		return 0; // test aid: connect later, from the running game (pdnetOnlinePoll)
 	}
-	return envStr("PD_NET_HOST") || envStr("PD_NET_PEER") || envStr("PD_NET_SERVER");
+	// a server alone (no host flag, no room) is just the Play Online menu's default: no connection at boot
+	return envStr("PD_NET_HOST") || envStr("PD_NET_PEER") || (envStr("PD_NET_SERVER") && envStr("PD_NET_ROOM"));
 }
 
 static void rendezvousYield(void)
@@ -1233,6 +1234,11 @@ void pdnetOnlineCancel(void)
 s32 pdnetOnlineState(void)
 {
 	return s_OnlineState;
+}
+
+s32 pdnetOnlineIsHost(void)
+{
+	return s_IsHost;
 }
 
 const char *pdnetOnlineRoom(void)
