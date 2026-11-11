@@ -11,6 +11,7 @@
 #include "utils.h"
 #include "system.h"
 #include "fs.h"
+#include "replaycheck.h"
 
 #if !SDL_VERSION_ATLEAST(2, 0, 14)
 // this was added in 2.0.14
@@ -922,7 +923,8 @@ void inputUpdate(void)
 {
 	SDL_GameControllerUpdate();
 
-	if (mouseEnabled) {
+	// deterministic mode: the mouse bypasses the controller pads, so it's ignored
+	if (mouseEnabled && !g_DetFixedStep) {
 		inputUpdateMouse();
 	}
 }

@@ -20,6 +20,7 @@
 #include "mod.h"
 #include "system.h"
 #include "utils.h"
+#include "replaycheck.h"
 
 u32 g_OsMemSize = 0;
 s32 g_OsMemSizeMb = 16;
@@ -161,6 +162,8 @@ int main(int argc, const char **argv)
 	if (g_FileAutoSelect >= 0) {
 		sysLogPrintf(LOG_NOTE, "player profile set to %d", g_FileAutoSelect);
 	}
+
+	replayInit();
 
 	mainProc();
 

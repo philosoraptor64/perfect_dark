@@ -6,6 +6,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "system.h"
+extern s32 g_DetFixedStep;
 #endif
 
 void frametimeInit(void)
@@ -54,6 +55,16 @@ void frametimeCalculate(void)
 
 	g_Vars.lostframetime60t = g_Vars.lostframetime60t + diffframet - diffframe60 * CYCLES_PER_FRAME;
 	g_Vars.lostframetime240t = g_Vars.lostframetime240t + diffframet - diffframe240 * (CYCLES_PER_FRAME / 4);
+
+#ifndef PLATFORM_N64
+	if (g_DetFixedStep) {
+		// netplay/replay: every logic tick is exactly one 60th, whatever the wall clock did
+		diffframe60 = 1;
+		diffframe240 = 4;
+		g_Vars.lostframetime60t = 0;
+		g_Vars.lostframetime240t = 0;
+	}
+#endif
 
 #ifdef PLATFORM_N64
 	g_Vars.mininc60 = 1;

@@ -12,6 +12,7 @@
 #include "video.h"
 #include "audio.h"
 #include "fs.h"
+#include "replaycheck.h"
 
 #define EEPROM_SIZE (EEP16K_MAXBLOCKS * 8)
 #define EEPROM_FNAME "eeprom.bin"
@@ -192,6 +193,7 @@ s32 osContStartReadData(OSMesgQueue *mesgq)
 
 void osContGetReadData(OSContPad *pad)
 {
+	OSContPad *first = pad;
 	// game always passes in an array of 4 OSContPads
 	for (s32 i = 0; i < MAXCONTROLLERS; ++i, ++pad) {
 		pad->button = 0;
@@ -205,6 +207,8 @@ void osContGetReadData(OSContPad *pad)
 			pad->errnum = 0;
 		}
 	}
+
+	replayFilterPads(first, MAXCONTROLLERS);
 }
 
 s32 osContStartQuery(OSMesgQueue *mq)
@@ -214,6 +218,7 @@ s32 osContStartQuery(OSMesgQueue *mq)
 
 void osContGetQuery(OSContStatus *status)
 {
+	OSContStatus *first = status;
 	// also always 4 status structs here
 	for (s32 i = 0; i < MAXCONTROLLERS; ++i, ++status) {
 		if (inputControllerConnected(i)) {
@@ -226,6 +231,8 @@ void osContGetQuery(OSContStatus *status)
 			status->status = 0;
 		}
 	}
+
+	replayFilterStatus(first, MAXCONTROLLERS);
 }
 
 /* Motor */

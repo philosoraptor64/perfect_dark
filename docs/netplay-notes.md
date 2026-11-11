@@ -37,6 +37,26 @@ code and what had to be synced.
    Trig comes from the system libm: fine Mac <-> iPhone, a risk vs. PC.
 5. Graphics is OpenGL only: see "iPhone build" below.
 
+## Deterministic mode + replay check (2026-11-10, MacBook)
+`port/include/replaycheck.h` / `port/src/replaycheck.c`. `PD_DETERMINISTIC=1` (implied by any PD_REPLAY_* var):
+fixed logic step (timing.c: diffframe60 = 1, diffframe240 = 4, no lost time; real-time pacing unchanged),
+RNG seed = `PD_SEED` (default 1) instead of the clock (pdmain.c), the music sequencer renders a fixed 368
+samples per tick (audiomgr.c; it used to follow the audio output queue level, and the AI command
+`aiIfMusicEventQueueIsEmpty` branches on the music event queue; the queue limit in audio.c drops a buffer now and
+then instead), mouse ignored (input.c; its deltas bypass the pads). Replay: `PD_REPLAY_CHECK=<file>` (per tick:
+stage, lvframe, prop count, RNG, hash of both RNG seeds, players' health/angles/pos, chrs' action/damage/pos, active
+props' type/pos), `PD_REPLAY_RECORD=<file>` / `PD_REPLAY_PLAY=<file>` (4 pads per tick incl. right stick and errnum),
+`PD_REPLAY_FRAMES`. In replay mode pad 1 always reads as connected, 2-4 absent (osContGetQuery/GetReadData).
+Test: `tools/replay/replay-test.sh` (scripted P1 in Defection: skip intro, walk/turn/strafe/fire; fresh `--savedir`
+per run with TickRateDivisor=0 = uncapped; dummy audio; window kept in the background; `RECORD=1` = record a human
+run; `INPUT=`, `STAGE=`, `TICKS=`, `FAST=0`). **Result:** 3 playbacks x 2430 ticks byte-identical, a real-speed
+(60/s) playback identical to the uncapped ones, seed 2 diverges at tick 0. Not yet covered: a human recording,
+Combat Sim with sims, the iPhone (cross-device), menus. Gotchas: one START too many opens the pause menu (the
+scripted A press then aborts the mission); a relative INPUT path made the game stop at an error dialog (fixed).
+Not deterministic yet / to check for netplay: per-player control settings (sensitivity, crosshair, aim assist
+options in pd.ini) must come from the match config; `TickRateDivisor` must be 1 online; camdraw.c func0f14b394
+reads the clock (looks like camera-spy/photo code: verify it can't feed the sim); joy.c pak polling uses the clock.
+
 ## Next steps
 1. Human check on the Mac: picture, sound, controller, play a level and Combat Simulator.
 2. Fixed-step mode + seeded RNG behind an env var, then a replay check like

@@ -175,6 +175,7 @@ void amgrStopThread(void)
 }
 
 extern u32 g_AdmaCurFrame;
+extern s32 g_DetFixedStep;
 
 void amgrMain(void *arg)
 {
@@ -340,7 +341,12 @@ void amgrFrame(void)
 		osAiSetNextBuffer(previnfo->data, previnfo->frameSamples * 4);
 	}
 
-	if (somevalue > 1100 && var8005cf94 == 0) {
+	if (g_DetFixedStep) {
+		// netplay/replay: the sequencer must advance the same amount on every machine
+		// (an AI command branches on the music event queue); the output queue limit
+		// in audio.c drops a buffer now and then instead
+		info->frameSamples = 368 + PAL * 184;
+	} else if (somevalue > 1100 && var8005cf94 == 0) {
 		// already a lot queued, render 1 naudio frame (184 samples) this frame
 		info->frameSamples = 184;
 		var8005cf94 = 2;

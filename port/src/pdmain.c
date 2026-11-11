@@ -3,6 +3,7 @@
 #include <ultra64.h>
 #include <PR/ultrasched.h>
 #include "lib/sched.h"
+#include "replaycheck.h"
 #include "lib/vars.h"
 #include "constants.h"
 #include "game/camdraw.h"
@@ -341,7 +342,7 @@ void mainLoop(void)
 		g_StageNum = STAGE_4MBMENU;
 	}
 
-	rngSetSeed(osGetCount());
+	rngSetSeed(g_DetFixedStep ? replayGetSeed() : osGetCount());
 
 	// Outer loop - this is infinite because ending is never changed
 	while (!ending) {
@@ -503,6 +504,7 @@ void mainLoop(void)
 			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
 				schedStartFrame(&g_Sched);
 				mainTick();
+				replayEndTick();
 				schedEndFrame(&g_Sched);
 			}
 			if (g_TickExtraSleep) {
