@@ -52,6 +52,9 @@ void pdnetRollbackPoint(void);
 s32 pdnetTimeSyncSkip(void);
 /* scripted test input (PD_NET_BOT, PD_TEST_BOT) */
 void pdnetBotPad(s32 tick, u32 seed, OSContPad *pad);
+/* puts this machine's own gameplay settings back (the session used both players'; called before pd.ini is
+ * saved) */
+void pdnetRestoreLocalSettings(void);
 /* after each simulated tick, with the deterministic state hash */
 void pdnetEndTick(s32 tick, u64 hash);
 

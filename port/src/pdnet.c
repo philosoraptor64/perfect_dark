@@ -13,6 +13,7 @@
 #include "platform.h"
 #include "system.h"
 #include "constants.h"
+#include "types.h"
 #include "pdnet.h"
 #include "rollback.h"
 #include "snapshot.h"
@@ -31,6 +32,9 @@
 #define PDNET_SAVE_REQ 1
 #define PDNET_SAVE_DATA 2
 #define PDNET_SAVE_CHUNK 1024
+#define PDNET_SET_MAGIC 0x50445354u /* 'PDST' gameplay settings, both directions */
+#define PDNET_SET_REQ 1
+#define PDNET_SET_DATA 2
 
 void osEepromGetImage(u8 *out);
 void osEepromUseImage(const u8 *data);
@@ -43,6 +47,23 @@ static s32 s_Session = 0;            // PD_NET_SESSION=1: the whole game online 
 static u8 *s_SaveImage = NULL;       // host: its save image; guest: the one being received
 static u32 s_SaveSize = 0;
 static u32 s_SaveChunksHave = 0;     // guest: bit per received chunk
+
+/* Gameplay settings from pd.ini that change the simulation. Each player brings their own per-player settings
+ * (their Player1 section: FOV, crosshair sway/edge, crouch mode, PC controls...) for their slot (host = player 1,
+ * guest = player 2); the host's game-wide ones (MaxExplosions) apply on both. Game.MemorySize can't change after
+ * boot, so it is part of the handshake hash instead. The local values come back before pd.ini is saved. */
+struct pdnetsettings {
+	struct extplayerconfig player;
+	s32 maxexplosions;
+};
+extern struct extplayerconfig g_PlayerExtCfg[MAX_PLAYERS];
+extern s32 g_MaxExplosions;
+extern s32 g_OsMemSizeMb;
+static struct pdnetsettings s_PeerSettings;
+static s32 s_HavePeerSettings = 0;
+static struct extplayerconfig s_LocalExtCfg[MAX_PLAYERS]; // restored before pd.ini is written
+static s32 s_LocalMaxExplosions = 0;
+static s32 s_SettingsApplied = 0;
 s32 g_NetFullViews = 0;   // see src/game/player.c VIEWPLAYERCOUNT and lv.c
 s32 g_NetLocalPlayer = 0;
 static s32 s_IsHost = 0;
@@ -183,6 +204,25 @@ static void sendHandshake(u8 type)
 }
 
 /* Reads every waiting datagram. Returns 1 once the other machine is known to be in the match. */
+static void sendSettings(u8 kind)
+{
+	u8 out[8 + sizeof(struct pdnetsettings)];
+	memset(out, 0, sizeof(out));
+	const u32 m = htonl(PDNET_SET_MAGIC);
+	memcpy(out, &m, 4);
+	out[4] = kind;
+	u32 len = 8;
+	if (kind == PDNET_SET_DATA) {
+		struct pdnetsettings mine;
+		memset(&mine, 0, sizeof(mine));
+		mine.player = s_LocalExtCfg[0]; // this machine's own player = its Player1 section
+		mine.maxexplosions = s_LocalMaxExplosions;
+		memcpy(out + 8, &mine, sizeof(mine));
+		len += sizeof(mine);
+	}
+	netSend(NULL, out, len);
+}
+
 static s32 pollSocket(void)
 {
 	s32 started = 0;
@@ -221,6 +261,15 @@ static s32 pollSocket(void)
 			}
 			continue;
 		}
+		if (n >= 8 && (memcpy(&magic, buf, 4), ntohl(magic) == PDNET_SET_MAGIC)) {
+			if (buf[4] == PDNET_SET_REQ) {
+				sendSettings(PDNET_SET_DATA);
+			} else if (buf[4] == PDNET_SET_DATA && n >= 8 + (ssize_t)sizeof(struct pdnetsettings)) {
+				memcpy(&s_PeerSettings, buf + 8, sizeof(s_PeerSettings));
+				s_HavePeerSettings = 1;
+			}
+			continue;
+		}
 		if (n >= 13 && (memcpy(&magic, buf, 4), ntohl(magic) == PDNET_HS_MAGIC)) {
 			u64 hash;
 			memcpy(&hash, buf + 5, 8);
@@ -238,7 +287,7 @@ static s32 pollSocket(void)
 				started = 1;
 			} else if (!s_IsHost && buf[4] == PDNET_MISMATCH) {
 				sysFatalError("Netplay: the host's match settings or game build differ from ours.\n"
-					"Both players need the same build, PD_SEED, stage, PD_REPLAY_BOTS and PD_ASPECT.");
+					"Both players need the same build, PD_SEED, stage, PD_REPLAY_BOTS, PD_ASPECT and Game.MemorySize.");
 			}
 			continue;
 		}
@@ -427,8 +476,13 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 #ifdef PDNET_BUILD_ID
 	sysLogPrintf(LOG_NOTE, "netplay: build %s", PDNET_BUILD_ID);
 #endif
+	// this machine's own settings (sent to the other player; restored before pd.ini is saved)
+	memcpy(s_LocalExtCfg, g_PlayerExtCfg, sizeof(s_LocalExtCfg));
+	s_LocalMaxExplosions = g_MaxExplosions;
+
 	// everything that must be equal on both machines
 	u64 h = 0xcbf29ce484222325ull;
+	h = fnv(h, &g_OsMemSizeMb, sizeof(g_OsMemSizeMb)); // the memp heap size (set at boot)
 	h = fnv(h, &seed, sizeof(seed));
 	h = fnv(h, &stage, sizeof(stage));
 	h = fnv(h, &bots, sizeof(bots));
@@ -524,6 +578,33 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 			osEepromUseImage(s_SaveImage);
 			sysLogPrintf(LOG_NOTE, "netplay: using the host's save data (%u bytes, not written here)", s_SaveSize);
 		}
+	}
+
+	// gameplay settings: each side asks for the other's until it has them (pollSocket answers requests,
+	// during the game too)
+	{
+		const u64 deadline3 = nowUsecs() + (u64)s_WaitSecs * 1000000ull;
+		u64 nextReq = 0;
+		while (!s_HavePeerSettings) {
+			pollSocket();
+			const u64 now = nowUsecs();
+			if (now > deadline3) {
+				sysFatalError("Netplay: didn't receive the other player's settings.");
+			}
+			if (now >= nextReq) {
+				sendSettings(PDNET_SET_REQ);
+				nextReq = now + 50000;
+			}
+			usleep(1000);
+		}
+		const struct extplayerconfig *hostcfg = s_IsHost ? &s_LocalExtCfg[0] : &s_PeerSettings.player;
+		const struct extplayerconfig *guestcfg = s_IsHost ? &s_PeerSettings.player : &s_LocalExtCfg[0];
+		g_PlayerExtCfg[0] = *hostcfg;
+		g_PlayerExtCfg[1] = *guestcfg;
+		g_MaxExplosions = s_IsHost ? s_LocalMaxExplosions : s_PeerSettings.maxexplosions;
+		s_SettingsApplied = 1;
+		sysLogPrintf(LOG_NOTE, "netplay: settings: player 1 fov %.0f, player 2 fov %.0f, max explosions %d",
+			g_PlayerExtCfg[0].fovy, g_PlayerExtCfg[1].fovy, g_MaxExplosions);
 	}
 
 	s_Active = 1;
@@ -871,4 +952,13 @@ s32 pdnetTimeSyncSkip(void)
 		return 1;
 	}
 	return 0;
+}
+
+void pdnetRestoreLocalSettings(void)
+{
+	if (s_SettingsApplied) {
+		memcpy(g_PlayerExtCfg, s_LocalExtCfg, sizeof(s_LocalExtCfg));
+		g_MaxExplosions = s_LocalMaxExplosions;
+		s_SettingsApplied = 0;
+	}
 }

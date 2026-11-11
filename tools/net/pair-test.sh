@@ -7,7 +7,8 @@
 #        LATENCY/JITTER (ms) LOSS (%) = simulated bad link on both sides; ROLLBACK=0 = lockstep;
 #        SERVER=local [ROOM=PDTS] [RELAY=1] = connect through a local room server with a room code;
 #        SESSION=1 = the whole game from boot (title, menus) instead of a direct match;
-#        TIMELIMIT=minutes = the match ends (then the end screen / menus))
+#        TIMELIMIT=minutes = the match ends (then the end screen / menus);
+#        HOST_INI/GUEST_INI=<pd.ini> = start that side with these settings)
 set -uo pipefail
 cd "$(dirname "$0")/../../build"
 STAGE=${STAGE:-0x32}; BOTS=${BOTS:-2}; FRAMES=${FRAMES:-1801}; SEED=${SEED:-7}; DELAY=${DELAY:-2}
@@ -15,6 +16,9 @@ RENDERER=${RENDERER:-opengl}; HOST_BOT=${HOST_BOT:-11}; GUEST_BOT=${GUEST_BOT:-2
 out=net-test/$(date +%Y%m%d-%H%M%S); mkdir -p "$out/host" "$out/guest"
 # HOST_SAVE=<eeprom.bin>: the host starts from a copy of that save (the original is never touched)
 [ -n "${HOST_SAVE:-}" ] && cp "$HOST_SAVE" "$out/host/eeprom.bin"
+# HOST_INI / GUEST_INI=<pd.ini>: start that side from a copy of these settings
+[ -n "${HOST_INI:-}" ] && cp "$HOST_INI" "$out/host/pd.ini"
+[ -n "${GUEST_INI:-}" ] && cp "$GUEST_INI" "$out/guest/pd.ini"
 sim=(PD_NET_SIM_LATENCY=${LATENCY:-0} PD_NET_SIM_JITTER=${JITTER:-0} PD_NET_SIM_LOSS=${LOSS:-0} PD_NET_ROLLBACK=${ROLLBACK:-1})
 stagearg=(--boot-stage "$STAGE")
 if [ "${SESSION:-0}" = 1 ]; then sim+=(PD_NET_SESSION=1); stagearg=(); fi

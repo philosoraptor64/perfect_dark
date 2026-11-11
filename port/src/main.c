@@ -19,6 +19,7 @@
 #include "config.h"
 #include "mod.h"
 #include "system.h"
+#include "pdnet.h"
 #include "utils.h"
 #include "replaycheck.h"
 
@@ -91,6 +92,7 @@ static void cleanup(void)
 {
 	sysLogPrintf(LOG_NOTE, "shutdown");
 	inputSaveBinds();
+	pdnetRestoreLocalSettings(); // netplay used both players' settings: save only this machine's own
 	configSave(CONFIG_PATH);
 	videoShutdown();
 	crashShutdown();
