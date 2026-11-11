@@ -70,8 +70,9 @@ Documents/replay/, then `devicectl device process launch --environment-variables
 io.github.philosoraptor.perfectdark --savedir replay/save2 --boot-stage 0x30`, it quits by itself (~40 s).
 Also: `PD_REPLAY_DUMP=from:to` writes every player/chr/prop with exact (%a) values for those ticks.
 
-## IN PROGRESS (2026-11-10 night, MacBook): Combat Sim replay check
-Plan: `PD_REPLAY_BOTS=N` (deterministic mode) boots straight into a Combat Sim match against N normal simulants
+## Combat Sim replay check (2026-11-10 night, MacBook)
+**Mac: done** (3 playbacks x 2430 ticks identical on Skedar vs 3 normal simulants; they roam the map and kill
+the player by tick 2400; seed 2 diverges). Phone run: next. Design: `PD_REPLAY_BOTS=N` (deterministic mode) boots straight into a Combat Sim match against N normal simulants
 (stage = `--boot-stage`, e.g. 0x32 Skedar): replaycheck.c `replaySetupMatch()` sets g_MpSetup.stagenum/chrslots
 (bit 0 = player 1, bits 4.. = bots) and g_BotConfigsArray[i].difficulty/type, called from the pdmain.c branch that
 does `g_MpSetup.chrslots = 1; mpReset()` (that branch also gets `|| replayWantsMatch()`). Then

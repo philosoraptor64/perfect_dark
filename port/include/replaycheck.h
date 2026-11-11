@@ -32,6 +32,9 @@ extern s32 g_DetFixedStep;
 extern s32 g_ReplayActive;
 
 void replayInit(void);
+/* PD_REPLAY_BOTS=N: boot straight into a Combat Sim match against N simulants (stage = --boot-stage) */
+s32 replayWantsMatch(void);
+void replaySetupMatch(void); /* before mpReset() */
 u64 replayGetSeed(void);
 /* called by osContGetReadData after the real pads were read */
 void replayFilterPads(OSContPad *pads, s32 count);

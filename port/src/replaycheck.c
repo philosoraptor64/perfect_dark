@@ -33,6 +33,7 @@ static struct replayframe *s_Play = NULL;
 static s32 s_PlayCount = 0;
 static s32 s_MaxTicks = -1;
 static s32 s_Tick = 0; // logic ticks since boot (index of the tick being simulated)
+static s32 s_Bots = 0; // PD_REPLAY_BOTS
 static s32 s_DumpFrom = -1, s_DumpTo = -1; // PD_REPLAY_DUMP=from:to = per-object lines in the hash log
 
 static const char *envStr(const char *name)
@@ -148,6 +149,12 @@ void replayInit(void)
 		}
 	}
 
+	if ((s = envStr("PD_REPLAY_BOTS"))) {
+		s_Bots = atoi(s);
+		if (s_Bots < 0) s_Bots = 0;
+		if (s_Bots > MAX_BOTS) s_Bots = MAX_BOTS;
+	}
+
 	if ((s = envStr("PD_REPLAY_DUMP"))) {
 		if (sscanf(s, "%d:%d", &s_DumpFrom, &s_DumpTo) != 2) {
 			s_DumpFrom = s_DumpTo = atoi(s);
@@ -183,6 +190,29 @@ void replayInit(void)
 
 	sysLogPrintf(LOG_NOTE, "deterministic mode: fixed step, aspect %.4f, seed %llu%s%s%s", gfx_fixed_aspect,
 		(unsigned long long)s_Seed, check ? ", hash log" : "", rec ? ", recording" : "", play ? ", playback" : "");
+}
+
+s32 replayWantsMatch(void)
+{
+	return g_DetFixedStep && s_Bots > 0 && g_StageNum < STAGE_TITLE;
+}
+
+void replaySetupMatch(void)
+{
+	if (!replayWantsMatch()) {
+		return;
+	}
+
+	g_MpSetup.stagenum = g_StageNum;
+	g_MpSetup.chrslots = 1; // player 1
+
+	for (s32 i = 0; i < s_Bots; i++) {
+		g_MpSetup.chrslots |= 1 << (MAX_PLAYERS + i);
+		g_BotConfigsArray[i].type = BOTTYPE_GENERAL;
+		g_BotConfigsArray[i].difficulty = BOTDIFF_NORMAL;
+	}
+
+	sysLogPrintf(LOG_NOTE, "replay: Combat Sim on stage 0x%02x against %d simulants", g_StageNum, s_Bots);
 }
 
 u64 replayGetSeed(void)

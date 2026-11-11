@@ -5,6 +5,7 @@
 #   INPUT=<file> tools/replay/replay-test.sh    play a recorded input file instead
 #   RECORD=1 tools/replay/replay-test.sh        record a human run (window in front, real speed)
 #
+# Combat Sim: STAGE=0x32 PD_REPLAY_BOTS=3 (boots into a match against 3 simulants).
 # Options: STAGE (0x30 Defection), TICKS (scripted length, 2400), RUNS (3), SEED (1),
 #          SEED2 (second seed for the divergence sanity check; empty = skip), FAST (1 = uncapped).
 # Output in build/replay-test/<stamp>/. The ROM must be at build/data/pd.ntsc-final.z64.
@@ -59,15 +60,16 @@ fi
 if [ -z "${INPUT:-}" ]; then
     INPUT="$OUT/input.txt"
     # scripted P1: wait, skip the intro (START), then walk/turn/strafe/fire/jump patterns
-    python3 -I - "$TICKS" > "$INPUT" <<'EOF'
+    python3 -I - "$TICKS" "${PD_REPLAY_BOTS:-0}" > "$INPUT" <<'EOF'
 import sys
 n = int(sys.argv[1])
+bots = int(sys.argv[2])  # Combat Sim: no intro to skip, START would open the pause menu
 A, B, Z, START = 0x8000, 0x4000, 0x2000, 0x1000
 CU, CD, CL, CR, R, L = 0x0008, 0x0004, 0x0002, 0x0001, 0x0010, 0x0020
 print("# scripted: tick then 4 x (buttons sx sy rsx rsy err)")
 for t in range(n):
     b = 0; x = 0; y = 0
-    if t in (240, 241, 242):
+    if not bots and t in (240, 241, 242):
         b |= START
     if t > 600:
         phase = (t // 90) % 6

@@ -471,7 +471,7 @@ void mainLoop(void)
 		} else if (g_Vars.perfectbuddynum) {
 			mpReset();
 		} else if (g_Vars.mplayerisrunning == false
-				&& (numplayers >= 2 || g_Vars.lvmpbotlevel || argFindByPrefix(1, "-play"))) {
+				&& (numplayers >= 2 || g_Vars.lvmpbotlevel || argFindByPrefix(1, "-play") || replayWantsMatch())) {
 			g_MpSetup.chrslots = 1;
 
 			if (numplayers >= 2) {
@@ -487,6 +487,7 @@ void mainLoop(void)
 			}
 
 			g_MpSetup.stagenum = g_StageNum;
+			replaySetupMatch();
 			mpReset();
 		}
 
