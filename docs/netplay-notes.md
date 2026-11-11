@@ -127,7 +127,12 @@ Steps:
       get_clip_parameters = {z 0..1, no y flip}. video.c turns `gfx_framebuffers_enabled` off and MSAA to 1 for Metal
       until M6. Runs clean under `MTL_DEBUG_LAYER=1`. `PD_METAL_STATS=1` logs draws/tris/skipped per 60 frames.
       Window-only screenshots: a tiny Swift CGWindowList tool for the window id, then `screencapture -x -o -l <id>`.
-- [ ] M4c. (next) Play through menus/levels on Metal vs OpenGL and fix differences; vertex ring buffer. (Original M4 text: Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
+- [x] M4c (partial, 2026-11-10): intro compared with OpenGL at 30 s / 45 s (3D city fly-by: buildings,
+      textures, ship, stars all render on Metal); the user watched it live: "looks and sounds clean and clear".
+      Possible small difference: the satellite dish looked a little more see-through on Metal (could be timing;
+      check with the same frame, e.g. by pausing). Not yet checked: menus, a level, Combat Sim, the blur menu
+      background (opt_blur, needs framebuffers = M6).
+- [ ] M4d. (next) Play through menus/levels on Metal vs OpenGL and fix differences; vertex ring buffer. (Original M4 text: Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
       (Visible result: the game renders.)
 - [ ] M5. Depth modes (decal/zmode, prim depth), depth range, scissor/viewport, alpha/blend.
 - [ ] M6. Framebuffers: create/update/copy/clear, MSAA resolve, fb textures (blur, motion effects,
