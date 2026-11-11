@@ -72,7 +72,19 @@ Also: `PD_REPLAY_DUMP=from:to` writes every player/chr/prop with exact (%a) valu
 
 ## Combat Sim replay check (2026-11-10 night, MacBook)
 **Mac: done** (3 playbacks x 2430 ticks identical on Skedar vs 3 normal simulants; they roam the map and kill
-the player by tick 2400; seed 2 diverges). Phone run: next. Design: `PD_REPLAY_BOTS=N` (deterministic mode) boots straight into a Combat Sim match against N normal simulants
+the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** (phone command as above plus
+`"PD_REPLAY_BOTS":"3"`, `--savedir replay/save3 --boot-stage 0x32`).
+
+## NEXT: 2-player netplay (start here)
+Lockstep first, then rollback, as in SpaghettiKart (`SpaghettiKart/src/port/KartNet.c` = the model: n64net_input
+with window 0, handshake, sync check). Steps: (1) add n64net as a submodule (philosoraptor64/n64net, pin the commit
+i64 uses; client/include/n64net_input.h); (2) `port/src/pdnet.c`: per-tick local pad -> n64net_input, remote pad ->
+the remote player's OSContPad in osContGetReadData (replayFilterPads is the hook point; the n64net pad has no right
+stick yet: send buttons + stick only, or extend the frame), host sends seed + aspect + stage + bot count + pd.ini
+gameplay settings in the handshake, both boot with PD_REPLAY_BOTS-style setup and 2 players (chrslots bits 0+1,
+numplayers 2 -> split screen; later each device shows only its own player, as in MK); (3) sync check = the replay
+hash every 30 ticks; (4) Mac pair test script (two instances on 127.0.0.1), then Mac <-> Duo; (5) rollback needs
+snapshots (globals + memp heap + mema; PD has no coroutines). Design: `PD_REPLAY_BOTS=N` (deterministic mode) boots straight into a Combat Sim match against N normal simulants
 (stage = `--boot-stage`, e.g. 0x32 Skedar): replaycheck.c `replaySetupMatch()` sets g_MpSetup.stagenum/chrslots
 (bit 0 = player 1, bits 4.. = bots) and g_BotConfigsArray[i].difficulty/type, called from the pdmain.c branch that
 does `g_MpSetup.chrslots = 1; mpReset()` (that branch also gets `|| replayWantsMatch()`). Then
