@@ -21,7 +21,9 @@
  *   PD_NET_BOT=seed          test aid: drive the local player with scripted input
  *   PD_NET_WAIT_SECS=n       how long to wait for the other machine (default 60)
  *   PD_NET_TEST_DESYNC=tick  test aid: corrupt this side's RNG at that tick (sync check must report it)
- * plus the deterministic-mode settings, equal on both: PD_SEED, --boot-stage, PD_REPLAY_BOTS,
+ * On the iPhone (no environment variables) the same KEY=VALUE lines go in Documents/netplay.cfg; on other
+ * machines PD_NET_CONFIG=<file> reads such a file. The environment wins over the file.
+ * plus the deterministic-mode settings, equal on both: PD_SEED, --boot-stage (or PD_BOOT_STAGE), PD_REPLAY_BOTS,
  * PD_ASPECT, PD_REPLAY_FRAMES (quit after n ticks).
  */
 

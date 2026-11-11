@@ -134,6 +134,11 @@ void replayInit(void)
 		return;
 	}
 
+	// PD_BOOT_STAGE=0x32 = --boot-stage for machines without a command line (iPhone netplay.cfg)
+	if ((s = envStr("PD_BOOT_STAGE"))) {
+		g_StageNum = (s32)strtol(s, NULL, 0);
+	}
+
 	if ((s = envStr("PD_SEED"))) {
 		s_Seed = strtoull(s, NULL, 0);
 	}

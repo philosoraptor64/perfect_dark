@@ -137,8 +137,61 @@ static s32 pollSocket(void)
 	return started;
 }
 
+/* Settings file for machines without environment variables (iPhone: Documents/netplay.cfg; elsewhere
+ * PD_NET_CONFIG=<file>): one KEY=VALUE per line (PD_* keys only, '#' comments), applied as environment
+ * variables unless the environment already sets them. */
+static void loadConfigFile(void)
+{
+	static s32 loaded = 0;
+	char path[1024];
+	char line[512];
+
+	if (loaded) {
+		return;
+	}
+	loaded = 1;
+
+	if (envStr("PD_NET_CONFIG")) {
+		snprintf(path, sizeof(path), "%s", envStr("PD_NET_CONFIG"));
+	} else {
+#ifdef PD_IOS
+		snprintf(path, sizeof(path), "%s/Documents/netplay.cfg", getenv("HOME") ? getenv("HOME") : ".");
+#else
+		return;
+#endif
+	}
+
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		return;
+	}
+	s32 n = 0;
+	while (fgets(line, sizeof(line), f)) {
+		char *p = line;
+		while (*p == ' ' || *p == '\t') p++;
+		if (*p == '#' || strncmp(p, "PD_", 3) != 0) {
+			continue;
+		}
+		char *eq = strchr(p, '=');
+		if (!eq) {
+			continue;
+		}
+		*eq = '\0';
+		char *val = eq + 1;
+		size_t len = strlen(val);
+		while (len && (val[len - 1] == '\n' || val[len - 1] == '\r' || val[len - 1] == ' ')) {
+			val[--len] = '\0';
+		}
+		setenv(p, val, 0);
+		n++;
+	}
+	fclose(f);
+	sysLogPrintf(LOG_NOTE, "netplay: %d settings from %s", n, path);
+}
+
 s32 pdnetWanted(void)
 {
+	loadConfigFile();
 	return envStr("PD_NET_HOST") || envStr("PD_NET_PEER");
 }
 

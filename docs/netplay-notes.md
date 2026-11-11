@@ -93,8 +93,25 @@ the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** 
   both bots; STAGE/BOTS/FRAMES/SEED/DELAY/RENDERER/HOST_BOT/GUEST_BOT/DESYNC_TEST). Results: Skedar + 2 simulants,
   1800 ticks, **IN SYNC 61 checks**, guest stalls 1.3 s total; `DESYNC_TEST=500` -> both report DESYNC at tick 510.
   Screenshot: 2-player split screen on both.
-- Next: (a) Mac <-> phone (needs a signed iOS build with this code: MacBook; the phone has no env vars, so add a
-  Documents/netplay.cfg like BattleShip/SpaghettiKart, read by pdnetWanted/pdnetInit); (b) one full-screen view per
+- Phone settings (2026-11-11): `Documents/netplay.cfg` (KEY=VALUE, PD_* keys, '#' comments; the environment wins;
+  PD_NET_CONFIG=<file> does the same on a Mac, tested: a file-configured guest stays in sync), plus
+  `PD_BOOT_STAGE=0x32` (= --boot-stage, for machines without a command line). The iOS build compiles with netplay.
+- **Mac <-> phone test (MacBook: build-ios + sign + install, then):** Mac host:
+  `cd build && PD_NET_HOST=1 PD_SEED=7 PD_REPLAY_BOTS=2 ./pd.arm64 --boot-stage 0x32` (add PD_NET_BOT=11 for a
+  Mac bot); phone `Documents/netplay.cfg`:
+  ```
+  PD_NET_PEER=<Mac LAN IP>:7301
+  PD_BOOT_STAGE=0x32
+  PD_SEED=7
+  PD_REPLAY_BOTS=2
+  ```
+  (copy with `devicectl device copy to --domain-type appDataContainer --domain-identifier
+  io.github.philosoraptor.perfectdark --source netplay.cfg --destination Documents/netplay.cfg`); launch the app;
+  first launch shows the local-network prompt (tap Allow; the handshake waits PD_NET_WAIT_SECS = 60 s). Remove
+  netplay.cfg afterwards for normal play. Log: Documents/pd.log ("netplay:" lines; DESYNC would be logged).
+  Both must be built from the same commit (VERSION_HASH is in the handshake; it comes from CMake configure time,
+  so re-run cmake on both after pulling).
+- Next: (a) the Mac <-> phone test above; (b) one full-screen view per
   device (as MK did) instead of split screen; (c) rollback (snapshots: globals + memp/mema heaps); (d) rendezvous
   (room codes) via n64net_rendezvous; (e) host picks the match in the real menus (like the Smash/MK sessions).
 
