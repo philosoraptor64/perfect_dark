@@ -144,7 +144,10 @@ Steps:
       Immediate copies between frames read `sFrontTex` (a blit of each presented frame, GL's "front buffer")
       on their own command buffer. framebufferOnly = NO. Result: **the CI menu's blurred background matches GL**,
       clean under MTL_DEBUG_LAYER. Stats line now includes copies, target switches, fb samples.
-- [ ] M6b. (next) MSAA (video.c still forces gfx_msaa_level = 1 on Metal; game_framebuffer + resolve), then
+- [x] Vertex ring buffer (2026-11-10): 3 x 8 MB shared buffers (frames in flight) + dispatch semaphore
+      (wait in start_frame, signal on completion); draws > 4 KB copy into the ring (256-byte aligned), fallback
+      newBuffer on overflow. Defection clean under MTL_DEBUG_LAYER.
+- [ ] M6b. (later; default vidMSAA = 1, so optional) MSAA (video.c still forces gfx_msaa_level = 1 on Metal; game_framebuffer + resolve), then
       in-level fb effects (bondview.c: g_PrevFrameFb motion blur, g_BlurFb), different game resolution
       (game_renders_to_framebuffer path), vertex ring buffer, decal depth-bias tuning.
 - [ ] M4e. (later) Play through menus/levels on Metal vs OpenGL and fix differences; vertex ring buffer. (Original M4 text: Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
@@ -152,4 +155,4 @@ Steps:
 - [ ] M5. Depth modes (decal/zmode, prim depth), depth range, scissor/viewport, alpha/blend.
 - [ ] M6. Framebuffers: create/update/copy/clear, MSAA resolve, fb textures (blur, motion effects,
       the PD-specific copy_framebuffer users). A/B screenshots vs OpenGL on the Mac for parity.
-- [ ] M7. iOS target: toolchain, UIScene SDL, Documents paths, Info.plist, controller; install on a phone.
+- [ ] M7. (next) iOS target: toolchain, UIScene SDL, Documents paths, Info.plist, controller; install on a phone.

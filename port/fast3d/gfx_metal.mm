@@ -13,6 +13,7 @@
 #include <map>
 #include <unordered_map>
 #include <algorithm>
+#include <cstring>
 #include <utility>
 #include <vector>
 
@@ -93,7 +94,15 @@ id<CAMetalDrawable> sDrawable;
 id<MTLCommandBuffer> sCmd;
 id<MTLRenderCommandEncoder> sEnc;
 id<MTLTexture> sDepthTex;
-id<MTLTexture> sFrontTex; // copy of the last presented frame (GL "front buffer" for immediate copies)
+id<MTLTexture> sFrontTex;
+// Vertex ring: one shared buffer per frame in flight; the semaphore keeps the CPU from
+// overwriting a buffer the GPU is still reading.
+constexpr int kFramesInFlight = 3;
+constexpr size_t kVertexRingSize = 8 * 1024 * 1024;
+id<MTLBuffer> sVertexRing[kFramesInFlight];
+size_t sVertexRingOffset;
+int sVertexRingIndex;
+dispatch_semaphore_t sFrameSemaphore; // copy of the last presented frame (GL "front buffer" for immediate copies)
 id<MTLTexture> sWhiteTex;
 id<MTLSamplerState> sDefaultSampler;
 std::unordered_map<uint64_t, id<MTLRenderPipelineState>> sPipelines;
@@ -401,6 +410,11 @@ void gfx_metal_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vb
     const size_t bytes = buf_vbo_len * sizeof(float);
     if (bytes <= 4096) {
         [sEnc setVertexBytes:buf_vbo length:bytes atIndex:0];
+    } else if (sVertexRingOffset + bytes <= kVertexRingSize) {
+        id<MTLBuffer> ring = sVertexRing[sVertexRingIndex];
+        memcpy((uint8_t*)ring.contents + sVertexRingOffset, buf_vbo, bytes);
+        [sEnc setVertexBuffer:ring offset:sVertexRingOffset atIndex:0];
+        sVertexRingOffset = (sVertexRingOffset + bytes + 255) & ~(size_t)255;
     } else {
         id<MTLBuffer> vb = [sDevice newBufferWithBytes:buf_vbo length:bytes options:MTLResourceStorageModeShared];
         [sEnc setVertexBuffer:vb offset:0 atIndex:0];
@@ -434,6 +448,10 @@ void gfx_metal_init(void) {
     sLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     sLayer.framebufferOnly = NO; // the screen is a copy_framebuffer source
     sQueue = [sDevice newCommandQueue];
+    for (int i = 0; i < kFramesInFlight; i++) {
+        sVertexRing[i] = [sDevice newBufferWithLength:kVertexRingSize options:MTLResourceStorageModeShared];
+    }
+    sFrameSemaphore = dispatch_semaphore_create(kFramesInFlight);
     sFramebuffers.assign(1, FramebufferMtl{});
     {
         MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -518,6 +536,9 @@ void gfx_metal_start_frame(void) {
     if (!sDrawable) {
         return;
     }
+    dispatch_semaphore_wait(sFrameSemaphore, DISPATCH_TIME_FOREVER);
+    sVertexRingIndex = (sVertexRingIndex + 1) % kFramesInFlight;
+    sVertexRingOffset = 0;
     const NSUInteger w = sDrawable.texture.width, h = sDrawable.texture.height;
     if (!sDepthTex || sDepthTex.width != w || sDepthTex.height != h) {
         MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
@@ -554,6 +575,10 @@ void gfx_metal_end_frame(void) {
             [blit copyFromTexture:back toTexture:sFrontTex];
             [blit endEncoding];
             [sCmd presentDrawable:sDrawable];
+            dispatch_semaphore_t sem = sFrameSemaphore;
+            [sCmd addCompletedHandler:^(id<MTLCommandBuffer>) {
+                dispatch_semaphore_signal(sem);
+            }];
         }
         [sCmd commit];
     }
