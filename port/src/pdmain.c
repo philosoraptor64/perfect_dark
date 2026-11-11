@@ -443,8 +443,8 @@ void mainLoop(void)
 				numplayers = getNumPlayers();
 			}
 
-			if (pdnetActive()) {
-				numplayers = 2; // netplay: host = player 1, guest = player 2
+			if (pdnetMatchMode()) {
+				numplayers = 2; // netplay match: host = player 1, guest = player 2
 			}
 		}
 

@@ -214,7 +214,7 @@ void replayInit(void)
 
 s32 replayWantsMatch(void)
 {
-	return g_DetFixedStep && (s_Bots > 0 || pdnetActive()) && g_StageNum < STAGE_TITLE;
+	return g_DetFixedStep && (s_Bots > 0 || pdnetMatchMode()) && g_StageNum < STAGE_TITLE;
 }
 
 void replaySetupMatch(void)
@@ -224,7 +224,7 @@ void replaySetupMatch(void)
 	}
 
 	g_MpSetup.stagenum = g_StageNum;
-	g_MpSetup.chrslots = pdnetActive() ? 0x3 : 1; // player 1 (+ player 2 online)
+	g_MpSetup.chrslots = pdnetMatchMode() ? 0x3 : 1; // player 1 (+ player 2 online)
 
 	for (s32 i = 0; i < s_Bots; i++) {
 		g_MpSetup.chrslots |= 1 << (MAX_PLAYERS + i);
@@ -351,6 +351,7 @@ static u64 hashState(u32 *outNumProps)
 	HASHV(h, g_Vars.lvframe60);
 	HASHV(h, g_Vars.lvupdate240);
 	HASHV(h, g_StageNum);
+	HASHV(h, g_MpSetup); // chosen in the menus (online sessions)
 
 	for (s32 i = 0; i < MAX_PLAYERS; i++) {
 		struct player *p = g_Vars.players[i];

@@ -25,10 +25,22 @@
 #define PDNET_HELLO 1
 #define PDNET_WELCOME 2
 #define PDNET_MISMATCH 3
+#define PDNET_SAVE_MAGIC 0x5044534bu /* 'PDSK' host's save image, in chunks */
+#define PDNET_SAVE_REQ 1
+#define PDNET_SAVE_DATA 2
+#define PDNET_SAVE_CHUNK 1024
+
+void osEepromGetImage(u8 *out);
+void osEepromUseImage(const u8 *data);
+u32 osEepromImageSize(void);
 #define PDNET_SYNC_EVERY 30
 #define PDNET_STATS_EVERY 600
 
 static s32 s_Active = 0;
+static s32 s_Session = 0;            // PD_NET_SESSION=1: the whole game online from boot (menus included)
+static u8 *s_SaveImage = NULL;       // host: its save image; guest: the one being received
+static u32 s_SaveSize = 0;
+static u32 s_SaveChunksHave = 0;     // guest: bit per received chunk
 s32 g_NetFullViews = 0;   // see src/game/player.c VIEWPLAYERCOUNT and lv.c
 s32 g_NetLocalPlayer = 0;
 static s32 s_IsHost = 0;
@@ -186,6 +198,27 @@ static s32 pollSocket(void)
 			break;
 		}
 		u32 magic;
+		if (n >= 6 && (memcpy(&magic, buf, 4), ntohl(magic) == PDNET_SAVE_MAGIC)) {
+			const u8 kind = buf[4], chunk = buf[5];
+			const u32 off = (u32)chunk * PDNET_SAVE_CHUNK;
+			if (s_IsHost && kind == PDNET_SAVE_REQ && s_SaveImage && off < s_SaveSize) {
+				u8 out[8 + PDNET_SAVE_CHUNK];
+				const u32 len = (s_SaveSize - off) < PDNET_SAVE_CHUNK ? (s_SaveSize - off) : PDNET_SAVE_CHUNK;
+				const u32 m = htonl(PDNET_SAVE_MAGIC);
+				memcpy(out, &m, 4);
+				out[4] = PDNET_SAVE_DATA;
+				out[5] = chunk;
+				memcpy(out + 8, s_SaveImage + off, len);
+				netSend(NULL, out, 8 + len);
+			} else if (!s_IsHost && kind == PDNET_SAVE_DATA && s_SaveImage && off < s_SaveSize && n >= 8) {
+				const u32 len = (u32)n - 8;
+				if (off + len <= s_SaveSize) {
+					memcpy(s_SaveImage + off, buf + 8, len);
+					s_SaveChunksHave |= 1u << chunk;
+				}
+			}
+			continue;
+		}
 		if (n >= 13 && (memcpy(&magic, buf, 4), ntohl(magic) == PDNET_HS_MAGIC)) {
 			u64 hash;
 			memcpy(&hash, buf + 5, 8);
@@ -281,6 +314,11 @@ static void rendezvousYield(void)
 s32 pdnetActive(void)
 {
 	return s_Active;
+}
+
+s32 pdnetMatchMode(void)
+{
+	return s_Active && !s_Session;
 }
 
 void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
@@ -405,7 +443,11 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	if ((s = envStr("PD_NET_DELAY"))) {
 		cfg.input_delay = (u32)atoi(s);
 	}
+	s_Session = envStr("PD_NET_SESSION") && atoi(envStr("PD_NET_SESSION")) != 0;
 	s_Rollback = !(envStr("PD_NET_ROLLBACK") && atoi(envStr("PD_NET_ROLLBACK")) == 0) && snapshotSupported();
+	if (s_Session) {
+		s_Rollback = 0; // TODO: rollback inside matches (it can't span stage loads); sessions run in lockstep for now
+	}
 	if ((s = envStr("PD_NET_ROLLBACK_WINDOW"))) {
 		s_RollbackWindow = (u32)atoi(s);
 	}
@@ -443,6 +485,42 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 			nextHello = now + 100000;
 		}
 		usleep(1000);
+	}
+
+	if (s_Session) {
+		// both machines must start from the same save: the guest plays on the host's image (never writing it)
+		s_SaveSize = osEepromImageSize();
+		s_SaveImage = calloc(1, s_SaveSize);
+		const u32 chunks = (s_SaveSize + PDNET_SAVE_CHUNK - 1) / PDNET_SAVE_CHUNK;
+		if (s_IsHost) {
+			osEepromGetImage(s_SaveImage); // served to the guest from pollSocket
+		} else {
+			const u64 deadline2 = nowUsecs() + (u64)s_WaitSecs * 1000000ull;
+			u64 nextReq = 0;
+			while (s_SaveChunksHave != (1u << chunks) - 1) {
+				pollSocket();
+				const u64 now = nowUsecs();
+				if (now > deadline2) {
+					sysFatalError("Netplay: didn't receive the host's save data.");
+				}
+				if (now >= nextReq) {
+					for (u32 c = 0; c < chunks; c++) {
+						if (!(s_SaveChunksHave & (1u << c))) {
+							u8 req[8] = { 0 };
+							const u32 m = htonl(PDNET_SAVE_MAGIC);
+							memcpy(req, &m, 4);
+							req[4] = PDNET_SAVE_REQ;
+							req[5] = (u8)c;
+							netSend(NULL, req, 8);
+						}
+					}
+					nextReq = now + 50000;
+				}
+				usleep(1000);
+			}
+			osEepromUseImage(s_SaveImage);
+			sysLogPrintf(LOG_NOTE, "netplay: using the host's save data (%u bytes, not written here)", s_SaveSize);
+		}
 	}
 
 	s_Active = 1;

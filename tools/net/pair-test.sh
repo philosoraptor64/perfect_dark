@@ -5,13 +5,18 @@
 #        HOST_BOT=11 GUEST_BOT=22; HOST_BOT=0 = play the host yourself with controller 1;
 #        DESYNC_TEST=tick = corrupt the guest at that tick: the result must be DESYNC;
 #        LATENCY/JITTER (ms) LOSS (%) = simulated bad link on both sides; ROLLBACK=0 = lockstep;
-#        SERVER=local [ROOM=PDTS] [RELAY=1] = connect through a local room server with a room code)
+#        SERVER=local [ROOM=PDTS] [RELAY=1] = connect through a local room server with a room code;
+#        SESSION=1 = the whole game from boot (title, menus) instead of a direct match)
 set -uo pipefail
 cd "$(dirname "$0")/../../build"
 STAGE=${STAGE:-0x32}; BOTS=${BOTS:-2}; FRAMES=${FRAMES:-1801}; SEED=${SEED:-7}; DELAY=${DELAY:-2}
 RENDERER=${RENDERER:-opengl}; HOST_BOT=${HOST_BOT:-11}; GUEST_BOT=${GUEST_BOT:-22}
 out=net-test/$(date +%Y%m%d-%H%M%S); mkdir -p "$out/host" "$out/guest"
+# HOST_SAVE=<eeprom.bin>: the host starts from a copy of that save (the original is never touched)
+[ -n "${HOST_SAVE:-}" ] && cp "$HOST_SAVE" "$out/host/eeprom.bin"
 sim=(PD_NET_SIM_LATENCY=${LATENCY:-0} PD_NET_SIM_JITTER=${JITTER:-0} PD_NET_SIM_LOSS=${LOSS:-0} PD_NET_ROLLBACK=${ROLLBACK:-1})
+stagearg=(--boot-stage "$STAGE")
+if [ "${SESSION:-0}" = 1 ]; then sim+=(PD_NET_SESSION=1); stagearg=(); fi
 common=("${sim[@]}" PD_SEED=$SEED PD_REPLAY_BOTS=$BOTS PD_REPLAY_FRAMES=$FRAMES PD_NET_DELAY=$DELAY PD_RENDERER=$RENDERER)
 hostbot=(); [ "$HOST_BOT" != 0 ] && hostbot=(PD_NET_BOT=$HOST_BOT)
 # SERVER=local: a room server on 127.0.0.1:7790 (n64net/server/rendezvous.py) and room codes instead of
@@ -27,18 +32,21 @@ else
     hostnet=(PD_NET_PORT=7301)
     guestnet=(PD_NET_PEER=127.0.0.1:7301 PD_NET_PORT=7302)
 fi
-env "${common[@]}" "${hostbot[@]}" "${hostnet[@]}" PD_NET_HOST=1 \
-    ./pd.arm64 --boot-stage "$STAGE" --savedir "$PWD/$out/host" > "$out/host.log" 2>&1 &
+env "${common[@]}" ${hostbot[@]+"${hostbot[@]}"} "${hostnet[@]}" PD_NET_HOST=1 \
+    ./pd.arm64 ${stagearg[@]+"${stagearg[@]}"} --savedir "$PWD/$out/host" > "$out/host.log" 2>&1 &
 hpid=$!
 sleep 1
 env "${common[@]}" ${DESYNC_TEST:+PD_NET_TEST_DESYNC=$DESYNC_TEST} PD_NET_BOT=$GUEST_BOT "${guestnet[@]}" \
-    ./pd.arm64 --boot-stage "$STAGE" --savedir "$PWD/$out/guest" > "$out/guest.log" 2>&1 &
+    ./pd.arm64 ${stagearg[@]+"${stagearg[@]}"} --savedir "$PWD/$out/guest" > "$out/guest.log" 2>&1 &
 gpid=$!
 trap 'kill $hpid $gpid $spid 2>/dev/null' INT TERM
 wait $hpid; wait $gpid
 [ -n "$spid" ] && kill $spid 2>/dev/null
 for side in host guest; do
     echo "== $side"; grep -E 'netplay:|DESYNC|FATAL|fatal' "$out/$side.log" | tail -6
+done
+for side in host guest; do
+    if ! grep -q 'netplay: connected' "$out/$side.log" 2>/dev/null; then echo "RESULT: FAILED ($side never connected)"; exit 1; fi
 done
 if grep -q DESYNC "$out/host.log" "$out/guest.log"; then echo "RESULT: DESYNC"; exit 1; fi
 echo "RESULT: IN SYNC (logs in build/$out)"

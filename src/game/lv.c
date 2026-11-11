@@ -1740,7 +1740,8 @@ Gfx *lvRender(Gfx *gdl)
 #ifndef PLATFORM_N64
 			// netplay full views: the other player's view was simulated like ours (its side effects happen
 			// on every machine) but only the local player's view is shown
-			if (g_NetFullViews && g_Vars.currentplayernum != g_NetLocalPlayer) {
+			// (only when the local player is in this stage: a one-player stage, e.g. the menus, is shown to everyone)
+			if (g_NetFullViews && PLAYERCOUNT() > g_NetLocalPlayer && g_Vars.currentplayernum != g_NetLocalPlayer) {
 				gdl = savedgdl;
 			}
 #endif

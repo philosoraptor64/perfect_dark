@@ -31,6 +31,7 @@ s32 osViClock = VI_NTSC_CLOCK;
 static u8 eeprom[EEPROM_SIZE];
 static char eepromPath[FS_MAXPATH + 1];
 static s32 eepromLoaded = 0;
+static s32 eepromReadOnly = 0; // netplay guest: plays on the host's save image, never writes its own file
 
 /* Time */
 
@@ -294,6 +295,9 @@ static inline void osEeepromLoad(const char *fname)
 
 static inline void osEeepromSave(const char *fname)
 {
+	if (eepromReadOnly) {
+		return;
+	}
 	FILE* fp = fsFileOpenWrite(fname);
 	if (fp) {
 		fwrite(eeprom, 1, EEPROM_SIZE, fp);
@@ -301,6 +305,28 @@ static inline void osEeepromSave(const char *fname)
 	} else {
 		sysLogPrintf(LOG_ERROR, "could not save EEPROM to `%s`: %s", fsFullPath(fname), strerror(errno));
 	}
+}
+
+/* netplay (port/src/pdnet.c): the host sends its save image, the guest plays on it in memory */
+u32 osEepromImageSize(void)
+{
+	return EEPROM_SIZE;
+}
+
+void osEepromGetImage(u8 *out)
+{
+	if (!eepromPath[0]) {
+		osEepromSetPath();
+	}
+	osEeepromLoad(eepromPath);
+	memcpy(out, eeprom, EEPROM_SIZE);
+}
+
+void osEepromUseImage(const u8 *data)
+{
+	memcpy(eeprom, data, EEPROM_SIZE);
+	eepromLoaded = 1;
+	eepromReadOnly = 1;
 }
 
 s32 osEepromProbe(OSMesgQueue *mq)

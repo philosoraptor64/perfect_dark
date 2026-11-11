@@ -22,6 +22,8 @@
  *   PD_NET_WAIT_SECS=n       how long to wait for the other machine (default 60)
  *   PD_NET_VIEW=split        both players split screen on both machines (default: each machine shows its
  *                            own player full screen; every player is simulated with the full-screen view)
+ *   PD_NET_SESSION=1         the whole game online from boot (title, menus, matches, back to the menus), like
+ *                            two controllers on one console; lockstep for now
  *   PD_NET_ROLLBACK=0        lockstep instead of rollback (default: rollback after PD_NET_ROLLBACK_FROM=60
  *                            ticks, window PD_NET_ROLLBACK_WINDOW=8)
  *   PD_NET_TEST_DESYNC=tick  test aid: corrupt this side's RNG at that tick (sync check must report it)
@@ -36,6 +38,9 @@ s32 pdnetWanted(void);
 /* opens the socket and runs the handshake (blocks until the other machine is there) */
 void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect);
 s32 pdnetActive(void);
+/* 1 = boot straight into the 2-player Combat Sim (default); 0 in a session (PD_NET_SESSION=1: the whole game
+ * online from boot, menus included; the guest plays on the host's save data) */
+s32 pdnetMatchMode(void);
 /* osContGetReadData: replaces pads 1-2 with the exchanged inputs for the current tick */
 void pdnetFilterPads(OSContPad *pads, s32 count, s32 tick);
 void pdnetFilterStatus(OSContStatus *status, s32 count);

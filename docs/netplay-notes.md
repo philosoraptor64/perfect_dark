@@ -165,6 +165,19 @@ the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** 
   server runs on the Studio (UDP 7780, password): never write its address or password into the repo. Phone
   netplay.cfg example: PD_NET_SERVER=<server>:7780, PD_NET_PASSWORD=..., PD_NET_ROOM=ABCD, PD_NET_HOST=1 (host)
   + PD_BOOT_STAGE / PD_SEED / PD_REPLAY_BOTS equal on both.
+- **Online sessions from boot (2026-11-11, v1 lockstep): `PD_NET_SESSION=1`** (no --boot-stage): both games run
+  the whole game (title, Carrington Institute menus, Combat Simulator setup, matches, back to the menus) on the
+  exchanged inputs, like two controllers on one console (controller 1 = host, 2 = guest). Boot/title/menus are
+  deterministic (idle boot and a button-mashing bot: identical hashes over 1500/3000 ticks). Same save on both:
+  after the handshake the guest requests the host's EEPROM image ('PDSK' REQ/DATA, 2 x 1 KB) and plays on it in
+  memory (`osEepromUseImage`, port/src/libultra.c: never writes its own eeprom.bin); the host saves normally.
+  The replay/sync hash now includes g_MpSetup. Full views: a one-player stage (the menus) is shown on both
+  machines (lv.c only drops other players' views when the local player exists). pdnetMatchMode() = the old direct
+  2-player match (numplayers/chrslots forcing) only outside sessions. Pair test `SESSION=1 [HOST_SAVE=<eeprom>]`:
+  3000 ticks of both bots wandering the menus IN SYNC (100 checks), both windows show the same menu.
+  TODO: rollback inside session matches (gate the window at stage changes: rollback can't span a stage load,
+  like MK's GateTransition), gameplay pd.ini settings from the host (e.g. MP options, crosshair/aim settings
+  that affect simulation), a pause/disconnect UI, in-game Host/Join/room code screen.
 - Next: (a) the Mac <-> phone test above; (b) one full-screen view per
   device (as MK did) instead of split screen; (c) rollback (snapshots: globals + memp/mema heaps); (d) rendezvous
   (room codes) via n64net_rendezvous; (e) host picks the match in the real menus (like the Smash/MK sessions).
