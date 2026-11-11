@@ -462,6 +462,12 @@ void mainLoop(void)
 			g_Vars.antiplayernum = 1;
 		}
 
+		if (pdnetActive()) {
+			sysLogPrintf(LOG_NOTE, "netplay: stage 0x%02x starts with %d player(s) (coop %d, anti %d)", g_StageNum,
+				numplayers, g_Vars.coopplayernum, g_Vars.antiplayernum);
+			fflush(stdout);
+		}
+
 		playermgrAllocatePlayers(numplayers);
 
 		if (argFindByPrefix(1, "-mpbots")) {

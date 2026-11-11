@@ -12,6 +12,7 @@
 #include <ultra64.h>
 #include "platform.h"
 #include "system.h"
+#include "constants.h"
 #include "pdnet.h"
 #include "rollback.h"
 #include "snapshot.h"
@@ -445,9 +446,7 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	}
 	s_Session = envStr("PD_NET_SESSION") && atoi(envStr("PD_NET_SESSION")) != 0;
 	s_Rollback = !(envStr("PD_NET_ROLLBACK") && atoi(envStr("PD_NET_ROLLBACK")) == 0) && snapshotSupported();
-	if (s_Session) {
-		s_Rollback = 0; // TODO: rollback inside matches (it can't span stage loads); sessions run in lockstep for now
-	}
+	// sessions: rollback only inside gameplay stages (pdnetRollbackPoint gates the window at stage changes)
 	if ((s = envStr("PD_NET_ROLLBACK_WINDOW"))) {
 		s_RollbackWindow = (u32)atoi(s);
 	}
@@ -604,6 +603,31 @@ static void exchangeTick(s32 tick, const OSContPad *local)
 		n64net_input_get(s_Net, p, (u32)tick, &n);
 		fromNet(&n, &s_TickPads[p]);
 	}
+
+	// PD_NET_RECORD=<file>: the pads every tick used (lockstep: final), in the replay check's input format,
+	// so a session can be replayed offline (PD_REPLAY_PLAY + PD_REPLAY_PADS=2)
+	static FILE *rec = NULL;
+	static s32 recInit = 0;
+	if (!recInit) {
+		recInit = 1;
+		if (envStr("PD_NET_RECORD")) {
+			rec = fopen(envStr("PD_NET_RECORD"), "w");
+			if (rec) fprintf(rec, "# pd netplay input: tick then 4 x (buttons sx sy rsx rsy err)\n");
+		}
+	}
+	if (rec) {
+		fprintf(rec, "%d", tick);
+		for (s32 p = 0; p < 4; p++) {
+			const OSContPad *pp = p < 2 ? &s_TickPads[p] : NULL;
+			if (pp) {
+				fprintf(rec, " %x %d %d %d %d 0", pp->button, pp->stick_x, pp->stick_y, pp->rstick_x, pp->rstick_y);
+			} else {
+				fprintf(rec, " 0 0 0 0 0 %d", CONT_NO_RESPONSE_ERROR);
+			}
+		}
+		fputc('\n', rec);
+		fflush(rec);
+	}
 }
 
 void pdnetFilterPads(OSContPad *pads, s32 count, s32 tick)
@@ -732,6 +756,46 @@ static void cbAdvance(void *user)
 	s_TickHashValid[t % PDNET_HASH_RING] = t;
 }
 
+extern s32 g_StageNum;
+extern s32 g_MainChangeToStageNum;
+static s32 s_LastStage = -1;
+static s32 s_StageStartTick = 0;
+
+/* Rollback can't span a stage load (memp is reset): the window is open only inside a gameplay stage, from
+ * s_RollbackFrom ticks after it started; when a stage change is requested every prediction is settled first. */
+static s32 rollbackWanted(s32 tick)
+{
+	if (g_StageNum != s_LastStage) {
+		s_LastStage = g_StageNum;
+		s_StageStartTick = tick;
+	}
+	if (g_MainChangeToStageNum >= 0) {
+		return 0;
+	}
+	if (g_StageNum >= STAGE_TITLE) {
+		return 0; // title, menus
+	}
+	return tick >= s_StageStartTick + s_RollbackFrom;
+}
+
+static void waitConfirmed(s32 tick)
+{
+	// all inputs up to tick - 1 confirmed (the ones the current state was built from)
+	const u64 start = nowUsecs();
+	while (tick > 0) {
+		const uint32_t c = n64net_input_confirmed_tick(s_Net);
+		if (c != UINT32_MAX && (s32)c >= tick - 1) {
+			break;
+		}
+		pollSocket();
+		n64net_input_resend(s_Net);
+		if (nowUsecs() - start > (u64)s_WaitSecs * 1000000ull) {
+			sysFatalError("Netplay: the other player stopped responding.");
+		}
+		usleep(250);
+	}
+}
+
 s32 pdnetRollbackActive(void)
 {
 	return s_Active && s_Rollback;
@@ -741,7 +805,13 @@ void pdnetRollbackPoint(void)
 {
 	const s32 tick = replayGetTick(); // the state now is "before tick `tick`"
 
-	if (!s_WindowOpen && tick >= s_RollbackFrom) {
+	const s32 want = rollbackWanted(tick);
+	s32 closing = 0;
+	if (s_WindowOpen && !want) {
+		// settle every prediction before the stage changes (the correction below may even cancel the change)
+		waitConfirmed(tick);
+		closing = 1;
+	} else if (!s_WindowOpen && want) {
 		n64net_input_set_window(s_Net, s_RollbackWindow);
 		s_WindowOpen = 1;
 	}
@@ -756,6 +826,11 @@ void pdnetRollbackPoint(void)
 	g_RollbackResim = 1;
 	const int depth = n64net_rollback_frame(s_Net, (uint32_t)tick, &cb);
 	g_RollbackResim = 0;
+
+	if (closing) {
+		n64net_input_set_window(s_Net, 0);
+		s_WindowOpen = 0;
+	}
 
 	if (depth > 0) {
 		s_Rollbacks++;

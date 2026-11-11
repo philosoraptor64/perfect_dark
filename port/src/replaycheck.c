@@ -214,7 +214,9 @@ void replayInit(void)
 
 s32 replayWantsMatch(void)
 {
-	return g_DetFixedStep && (s_Bots > 0 || pdnetMatchMode()) && g_StageNum < STAGE_TITLE;
+	// never in an online session: there the players set matches up in the menus
+	const s32 session = pdnetActive() && !pdnetMatchMode();
+	return g_DetFixedStep && !session && (s_Bots > 0 || pdnetMatchMode()) && g_StageNum < STAGE_TITLE;
 }
 
 void replaySetupMatch(void)
@@ -230,6 +232,13 @@ void replaySetupMatch(void)
 		g_MpSetup.chrslots |= 1 << (MAX_PLAYERS + i);
 		g_BotConfigsArray[i].type = BOTTYPE_GENERAL;
 		g_BotConfigsArray[i].difficulty = BOTDIFF_NORMAL;
+	}
+
+	// PD_REPLAY_TIMELIMIT=minutes: a match that ends (tests of what happens after it)
+	const char *tl = envStr("PD_REPLAY_TIMELIMIT");
+	if (tl) {
+		const s32 minutes = atoi(tl);
+		g_MpSetup.timelimit = minutes >= 1 ? (u8)(minutes - 1) : 60;
 	}
 
 	sysLogPrintf(LOG_NOTE, "replay: Combat Sim on stage 0x%02x against %d simulants", g_StageNum, s_Bots);
@@ -251,8 +260,14 @@ void replayFilterStatus(OSContStatus *status, s32 count)
 		return;
 	}
 
+	// PD_REPLAY_PADS=2: controller 2 is plugged in too (idle), like an online session
+	static s32 numpads = -1;
+	if (numpads < 0) {
+		numpads = envStr("PD_REPLAY_PADS") ? atoi(envStr("PD_REPLAY_PADS")) : 1;
+	}
+
 	for (s32 i = 0; i < count; i++) {
-		if (i == 0) {
+		if (i < numpads) {
 			status[i].errnum = 0;
 			status[i].type = CONT_ABSOLUTE;
 			status[i].status = CONT_CARD_ON;
@@ -306,6 +321,15 @@ void replayFilterPads(OSContPad *pads, s32 count)
 
 	if (s_TestBotSeed) {
 		pdnetBotPad(s_Tick, s_TestBotSeed, &pads[0]);
+	}
+	// PD_TEST_BOT2=seed (with PD_REPLAY_PADS=2): controller 2 is driven too, like a session's second player
+	static u32 bot2 = 1;
+	if (bot2 == 1) {
+		bot2 = envStr("PD_TEST_BOT2") ? ((u32)strtoul(envStr("PD_TEST_BOT2"), NULL, 0) | 1) : 0;
+	}
+	if (bot2 && count > 1) {
+		pdnetBotPad(s_Tick, bot2, &pads[1]);
+		pads[1].errnum = 0;
 	}
 
 	memcpy(s_PadRing[s_Tick % PAD_RING], pads, sizeof(OSContPad) * count);

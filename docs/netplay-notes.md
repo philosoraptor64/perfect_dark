@@ -175,8 +175,18 @@ the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** 
   machines (lv.c only drops other players' views when the local player exists). pdnetMatchMode() = the old direct
   2-player match (numplayers/chrslots forcing) only outside sessions. Pair test `SESSION=1 [HOST_SAVE=<eeprom>]`:
   3000 ticks of both bots wandering the menus IN SYNC (100 checks), both windows show the same menu.
-  TODO: rollback inside session matches (gate the window at stage changes: rollback can't span a stage load,
-  like MK's GateTransition), gameplay pd.ini settings from the host (e.g. MP options, crosshair/aim settings
+  **Rollback in sessions (2026-11-11):** pdnetRollbackPoint gates the window: open only in a gameplay stage
+  (g_StageNum < STAGE_TITLE) from PD_NET_ROLLBACK_FROM ticks after it started; when a stage change is pending
+  it waits for every input up to tick - 1 to be confirmed, lets n64net correct, then closes the window (the
+  change happens in lockstep; a correction that cancels the change just reopens next frame). Same gate in direct
+  match mode. Session over 40+20 jitter+3% loss: IN SYNC 80 checks, 47-77 rollbacks inside the Carrington
+  Institute. Fixes on the way: replayWantsMatch must be false in sessions (PD_REPLAY_BOTS turned every gameplay
+  stage, e.g. the CI hub, into a forced Combat Sim with simulants: that load hangs in playerReset collision);
+  room buffers are zeroed on every load and freed at bgStop. Known test-harness quirk: a direct-boot match with
+  PD_REPLAY_TIMELIMIT reloads the stage after it ends and hangs there even offline (not netplay).
+  New test aids: PD_NET_RECORD=<file> (pads per tick in replay format), PD_REPLAY_PADS=2 / PD_TEST_BOT2=seed
+  (offline: controller 2 plugged in / driven), PD_ROOM_CACHE=0, PD_REPLAY_TIMELIMIT=minutes (pair-test TIMELIMIT).
+  TODO: gameplay pd.ini settings from the host (e.g. MP options, crosshair/aim settings
   that affect simulation), a pause/disconnect UI, in-game Host/Join/room code screen.
 - Next: (a) the Mac <-> phone test above; (b) one full-screen view per
   device (as MK did) instead of split screen; (c) rollback (snapshots: globals + memp/mema heaps); (d) rendezvous

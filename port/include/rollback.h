@@ -29,6 +29,8 @@ s32 rollbackSyncTestMismatches(void);
  * Otherwise these are plain sysMemAlloc/sysMemFree. */
 void *rollbackRoomAlloc(s32 roomnum, s32 kind, u32 len);
 void rollbackRoomFree(s32 roomnum, s32 kind, void *ptr);
+/* stage end (bgStop, after every room was unloaded): frees the kept buffers */
+void rollbackRoomCacheReset(void);
 /* on for SyncTest and rollback netplay (before the stage loads) */
 void rollbackEnableRoomCache(void);
 

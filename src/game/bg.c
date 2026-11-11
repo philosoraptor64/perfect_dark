@@ -2070,6 +2070,9 @@ void bgBuildTables(s32 stagenum)
 void bgStop(void)
 {
 	bgUnloadAllRooms();
+#ifndef PLATFORM_N64
+	rollbackRoomCacheReset(); // the next stage's rooms must not reuse this stage's buffers
+#endif
 	mtx00016748(1);
 }
 

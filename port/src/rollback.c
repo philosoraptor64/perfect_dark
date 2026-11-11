@@ -161,7 +161,8 @@ static struct roombuf s_RoomBufs[2][ROOM_CACHE_ROOMS];
 
 void rollbackEnableRoomCache(void)
 {
-	s_RoomCache = 1;
+	const char *e = getenv("PD_ROOM_CACHE"); // test switch: PD_ROOM_CACHE=0 keeps plain allocations
+	s_RoomCache = !(e && *e && atoi(e) == 0);
 }
 
 void *rollbackRoomAlloc(s32 roomnum, s32 kind, u32 len)
@@ -175,6 +176,10 @@ void *rollbackRoomAlloc(s32 roomnum, s32 kind, u32 len)
 		b->ptr = sysMemAlloc(len);
 		b->cap = b->ptr ? len : 0;
 	}
+	if (b->ptr) {
+		// every load starts from the same bytes on every machine (fresh or reused buffer alike)
+		memset(b->ptr, 0, len);
+	}
 	return b->ptr;
 }
 
@@ -185,6 +190,17 @@ void rollbackRoomFree(s32 roomnum, s32 kind, void *ptr)
 		return;
 	}
 	// kept for the room's next load (or a rollback to before this unload)
+}
+
+void rollbackRoomCacheReset(void)
+{
+	for (s32 k = 0; k < 2; k++) {
+		for (s32 r = 0; r < ROOM_CACHE_ROOMS; r++) {
+			sysMemFree(s_RoomBufs[k][r].ptr);
+			s_RoomBufs[k][r].ptr = NULL;
+			s_RoomBufs[k][r].cap = 0;
+		}
+	}
 }
 
 s32 rollbackSyncTestMismatches(void)

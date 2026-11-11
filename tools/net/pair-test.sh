@@ -6,7 +6,8 @@
 #        DESYNC_TEST=tick = corrupt the guest at that tick: the result must be DESYNC;
 #        LATENCY/JITTER (ms) LOSS (%) = simulated bad link on both sides; ROLLBACK=0 = lockstep;
 #        SERVER=local [ROOM=PDTS] [RELAY=1] = connect through a local room server with a room code;
-#        SESSION=1 = the whole game from boot (title, menus) instead of a direct match)
+#        SESSION=1 = the whole game from boot (title, menus) instead of a direct match;
+#        TIMELIMIT=minutes = the match ends (then the end screen / menus))
 set -uo pipefail
 cd "$(dirname "$0")/../../build"
 STAGE=${STAGE:-0x32}; BOTS=${BOTS:-2}; FRAMES=${FRAMES:-1801}; SEED=${SEED:-7}; DELAY=${DELAY:-2}
@@ -17,6 +18,7 @@ out=net-test/$(date +%Y%m%d-%H%M%S); mkdir -p "$out/host" "$out/guest"
 sim=(PD_NET_SIM_LATENCY=${LATENCY:-0} PD_NET_SIM_JITTER=${JITTER:-0} PD_NET_SIM_LOSS=${LOSS:-0} PD_NET_ROLLBACK=${ROLLBACK:-1})
 stagearg=(--boot-stage "$STAGE")
 if [ "${SESSION:-0}" = 1 ]; then sim+=(PD_NET_SESSION=1); stagearg=(); fi
+[ -n "${TIMELIMIT:-}" ] && sim+=(PD_REPLAY_TIMELIMIT=$TIMELIMIT)
 common=("${sim[@]}" PD_SEED=$SEED PD_REPLAY_BOTS=$BOTS PD_REPLAY_FRAMES=$FRAMES PD_NET_DELAY=$DELAY PD_RENDERER=$RENDERER)
 hostbot=(); [ "$HOST_BOT" != 0 ] && hostbot=(PD_NET_BOT=$HOST_BOT)
 # SERVER=local: a room server on 127.0.0.1:7790 (n64net/server/rendezvous.py) and room codes instead of
