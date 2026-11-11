@@ -75,7 +75,13 @@ static s32 connectedMask = 0;
 
 static s32 numJoysticks = 0;
 
+#ifdef PD_IOS
+// iOS: no HIDAPI (its Steam controller driver opens CoreBluetooth, and iOS kills an app that does that
+// without a Bluetooth usage description); controllers come through GameController (MFi)
+static s32 useHIDAPI = 0;
+#else
 static s32 useHIDAPI = 1;
+#endif
 static s32 useRawInput = 0;
 
 static s32 mouseEnabled = 1;
@@ -680,6 +686,9 @@ static inline void inputLoadBinds(void)
 
 s32 inputInit(void)
 {
+#ifdef PD_IOS
+	useHIDAPI = 0; // even if pd.ini says otherwise (see above)
+#endif
 	// Set SDL hints before initializing the controller subsystem.
 	if (useHIDAPI) {
 #if SDL_VERSION_ATLEAST(2, 0, 12)

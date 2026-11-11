@@ -129,6 +129,14 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     }
 #endif
 
+#ifdef PD_IOS
+    // SDL's HIDAPI joystick driver opens CoreBluetooth, and iOS kills an app that does that
+    // without NSBluetoothAlwaysUsageDescription. Controllers come through GameController (MFi)
+    // instead, as in our other iOS ports. Also: the accelerometer is not a joystick.
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+    SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
+#endif
+
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         sysFatalError("Could not init SDL:\n%s", SDL_GetError());
     }
