@@ -298,3 +298,37 @@ void configInit(void)
 		configLoad(CONFIG_PATH);
 	}
 }
+
+/* Online sessions started mid-game restore the game's boot state (pdnet.c); settings that live in game memory must
+ * keep their current values. configKeepValues copies every registered setting into a buffer, configRestoreValues
+ * writes them back. */
+static u8 *keptValues = NULL;
+
+void configKeepValues(void)
+{
+	size_t total = 0;
+	for (s32 i = 0; i < numSettings; ++i) {
+		total += settings[i].type == CFG_STR ? settings[i].max_str + 1 : 4;
+	}
+	free(keptValues);
+	keptValues = malloc(total ? total : 1);
+	u8 *p = keptValues;
+	for (s32 i = 0; i < numSettings; ++i) {
+		const size_t n = settings[i].type == CFG_STR ? settings[i].max_str + 1 : 4;
+		if (settings[i].ptr && settings[i].type != CFG_NONE) memcpy(p, settings[i].ptr, n);
+		p += n;
+	}
+}
+
+void configRestoreValues(void)
+{
+	if (!keptValues) return;
+	const u8 *p = keptValues;
+	for (s32 i = 0; i < numSettings; ++i) {
+		const size_t n = settings[i].type == CFG_STR ? settings[i].max_str + 1 : 4;
+		if (settings[i].ptr && settings[i].type != CFG_NONE) memcpy(settings[i].ptr, p, n);
+		p += n;
+	}
+	free(keptValues);
+	keptValues = NULL;
+}

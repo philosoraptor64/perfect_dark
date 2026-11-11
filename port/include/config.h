@@ -19,3 +19,6 @@ void configRegisterInt(const char *key, s32 *var, s32 min, s32 max);
 void configRegisterUInt(const char* key, u32* var, u32 min, u32 max);
 void configRegisterFloat(const char *key, f32 *var, f32 min, f32 max);
 void configRegisterString(const char *key, char *var, u32 maxstr);
+
+void configKeepValues(void);
+void configRestoreValues(void);

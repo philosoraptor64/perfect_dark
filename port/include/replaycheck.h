@@ -47,4 +47,7 @@ u64 replayStateHash(void);
 s32 replayGetTick(void);
 void replaySetTick(s32 tick);
 
+/* online session started mid-game: deterministic mode from now on (tick 0, this seed) */
+void replayBeginOnline(u64 seed);
+
 #endif

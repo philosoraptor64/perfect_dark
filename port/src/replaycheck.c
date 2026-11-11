@@ -429,6 +429,22 @@ void replaySetTick(s32 tick)
 	s_Tick = tick;
 }
 
+void replayBeginOnline(u64 seed)
+{
+	// an online session started mid-game: deterministic mode from here, both machines from tick 0
+	g_DetFixedStep = 1;
+	s_Seed = seed;
+	s_Bots = 0;
+	s_Tick = 0;
+	memset(s_PadRing, 0, sizeof(s_PadRing));
+	if (envStr("PD_REPLAY_FRAMES")) {
+		s_MaxTicks = atoi(envStr("PD_REPLAY_FRAMES")); // test runs: quit after n session ticks
+	}
+	gfx_fixed_aspect = 16.f / 9.f;
+	sysLogPrintf(LOG_NOTE, "deterministic mode: fixed step, aspect %.4f, seed %llu (online session)", gfx_fixed_aspect,
+		(unsigned long long)s_Seed);
+}
+
 void replayEndTick(void)
 {
 	if (!g_DetFixedStep) {

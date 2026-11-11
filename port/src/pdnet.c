@@ -23,6 +23,8 @@
 #include "pdnet_build_id.h"
 #include <stdbool.h>
 #include <SDL.h>
+#include <pthread.h>
+#include "config.h"
 
 /* See pdnet.h. Lockstep (rollback window 0) through n64net_input. */
 
@@ -58,7 +60,9 @@ static u32 s_SaveChunksHave = 0;     // guest: bit per received chunk
 struct pdnetsettings {
 	struct extplayerconfig player;
 	s32 maxexplosions;
+	u32 seedlo, seedhi; // host: the session's RNG seed (sessions started mid-game)
 };
+static u64 s_SessionSeed = 0;
 extern struct extplayerconfig g_PlayerExtCfg[MAX_PLAYERS];
 extern s32 g_MaxExplosions;
 extern s32 g_OsMemSizeMb;
@@ -77,6 +81,7 @@ static n64net_input *s_Net = NULL;
 static u64 s_ConfigHash = 0;
 static u32 s_BotSeed = 0;
 static s32 s_WaitSecs = 60;
+static volatile s32 s_HandshakeMismatch = 0;
 
 /* The other player gone (quit = BYE, or silent for PD_NET_DROP_SECS, 20): the session ends and this machine plays on offline with its own player (the other one stands
  * still). The guest still never saves. */
@@ -228,6 +233,8 @@ static void sendSettings(u8 kind)
 		memset(&mine, 0, sizeof(mine));
 		mine.player = s_LocalExtCfg[0]; // this machine's own player = its Player1 section
 		mine.maxexplosions = s_LocalMaxExplosions;
+		mine.seedlo = (u32)s_SessionSeed;
+		mine.seedhi = (u32)(s_SessionSeed >> 32);
 		memcpy(out + 8, &mine, sizeof(mine));
 		len += sizeof(mine);
 	}
@@ -338,8 +345,7 @@ static s32 pollSocket(void)
 			} else if (!s_IsHost && buf[4] == PDNET_WELCOME) {
 				started = 1;
 			} else if (!s_IsHost && buf[4] == PDNET_MISMATCH) {
-				sysFatalError("Netplay: the host's match settings or game build differ from ours.\n"
-					"Both players need the same build, PD_SEED, stage, PD_REPLAY_BOTS, PD_ASPECT and Game.MemorySize.");
+				s_HandshakeMismatch = 1;
 			}
 			continue;
 		}
@@ -406,6 +412,9 @@ static void loadConfigFile(void)
 s32 pdnetWanted(void)
 {
 	loadConfigFile();
+	if (envStr("PD_NET_LATE")) {
+		return 0; // test aid: connect later, from the running game (pdnetOnlinePoll)
+	}
 	return envStr("PD_NET_HOST") || envStr("PD_NET_PEER") || envStr("PD_NET_SERVER");
 }
 
@@ -424,20 +433,10 @@ s32 pdnetMatchMode(void)
 	return s_Active && !s_Session;
 }
 
-void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
+/* Reads the PD_NET_* settings that don't depend on how the session starts. */
+static void readEnv(void)
 {
 	const char *s;
-
-	if (!pdnetWanted()) {
-		return;
-	}
-
-	s_IsHost = envStr("PD_NET_HOST") && atoi(envStr("PD_NET_HOST")) != 0;
-	const char *server = envStr("PD_NET_SERVER");
-	s32 port = server ? 0 : (s_IsHost ? 7301 : 7302); // room codes: any free port
-	if ((s = envStr("PD_NET_PORT"))) {
-		port = atoi(s);
-	}
 	if ((s = envStr("PD_NET_BOT"))) {
 		s_BotSeed = (u32)strtoul(s, NULL, 0) | 1;
 	}
@@ -450,12 +449,30 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	if ((s = envStr("PD_NET_SIM_LATENCY"))) s_SimLatencyMs = (u32)atoi(s);
 	if ((s = envStr("PD_NET_SIM_JITTER"))) s_SimJitterMs = (u32)atoi(s);
 	if ((s = envStr("PD_NET_SIM_LOSS"))) s_SimLossPct = (u32)atoi(s);
-	if (s_SimLatencyMs || s_SimJitterMs || s_SimLossPct) {
-		s_SimQueue = calloc(SIM_QUEUE, sizeof(*s_SimQueue));
-		s_SimRand ^= (u32)port;
-		sysLogPrintf(LOG_NOTE, "netplay: simulating %u ms + %u ms jitter, %u%% loss on sent packets", s_SimLatencyMs,
-			s_SimJitterMs, s_SimLossPct);
+	s_Rollback = !(envStr("PD_NET_ROLLBACK") && atoi(envStr("PD_NET_ROLLBACK")) == 0) && snapshotSupported();
+	if ((s = envStr("PD_NET_ROLLBACK_WINDOW"))) {
+		s_RollbackWindow = (u32)atoi(s);
 	}
+	if ((s = envStr("PD_NET_ROLLBACK_FROM"))) {
+		s_RollbackFrom = atoi(s);
+	}
+}
+
+static char s_ConnError[256];
+
+#define CONN_FAIL(...) do { snprintf(s_ConnError, sizeof(s_ConnError), __VA_ARGS__); goto fail; } while (0)
+
+/* Socket, room server or direct address, handshake, the host's save (sessions) and both players' settings.
+ * Runs on the game thread at boot or on the online thread (pdnetOnlineHost/Join) while the game keeps running;
+ * touches no game state. Returns 0, or -1 with s_ConnError set (socket closed). `cancel` may stop the wait. */
+static s32 connectPeer(const char *server, const char *room, const char *password, s32 port, u64 hash,
+	const volatile int *cancel)
+{
+	const char *s;
+	s_ConnError[0] = '\0';
+	s_HavePeerSettings = 0;
+	s_SaveChunksHave = 0;
+	s_PeerLeft = 0;
 
 	if (!s_IsHost && !server) {
 		char host[128];
@@ -463,7 +480,7 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 		const char *peer = envStr("PD_NET_PEER");
 		const char *colon = peer ? strrchr(peer, ':') : NULL;
 		if (!peer) {
-			sysFatalError("netplay: the guest needs PD_NET_PEER=host:port");
+			CONN_FAIL("Netplay: the guest needs PD_NET_PEER=host:port");
 		}
 		snprintf(host, sizeof(host), "%.*s", colon ? (int)(colon - peer) : (int)strlen(peer), peer);
 		if (colon) {
@@ -473,14 +490,14 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 		s_Peer.sin_family = AF_INET;
 		s_Peer.sin_port = htons((u16)peerport);
 		if (inet_pton(AF_INET, host, &s_Peer.sin_addr) != 1) {
-			sysFatalError("netplay: PD_NET_PEER must be an IPv4 address:port, got `%s`", peer);
+			CONN_FAIL("Netplay: PD_NET_PEER must be an IPv4 address:port, got `%s`", peer);
 		}
 		s_HavePeer = 1;
 	}
 
 	s_Sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (s_Sock < 0) {
-		sysFatalError("netplay: socket() failed: %s", strerror(errno));
+		CONN_FAIL("Netplay: socket() failed: %s", strerror(errno));
 	}
 	struct sockaddr_in local;
 	memset(&local, 0, sizeof(local));
@@ -488,83 +505,65 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	local.sin_addr.s_addr = htonl(INADDR_ANY);
 	local.sin_port = htons((u16)port);
 	if (bind(s_Sock, (struct sockaddr *)&local, sizeof(local)) < 0) {
-		sysFatalError("netplay: can't bind UDP port %d: %s", port, strerror(errno));
+		CONN_FAIL("Netplay: can't use UDP port %d: %s", port, strerror(errno));
 	}
 	fcntl(s_Sock, F_SETFL, fcntl(s_Sock, F_GETFL, 0) | O_NONBLOCK);
 
 	if (server) {
 		// room codes: the room server pairs us with the other player (hole punching, relay as a fallback)
 		char game[96];
-#ifdef PDNET_BUILD_ID
 		snprintf(game, sizeof(game), "pd-%s+%s", VERSION_ROMID, PDNET_BUILD_ID);
-#else
-		snprintf(game, sizeof(game), "pd-%s+dev", VERSION_ROMID);
-#endif
 		N64NetRendezvousConfig rc;
 		memset(&rc, 0, sizeof(rc));
 		rc.server = server;
 		rc.game = game;
-		rc.room = envStr("PD_NET_ROOM");
-		rc.password = envStr("PD_NET_PASSWORD");
+		rc.room = room;
+		rc.password = password;
 		rc.invite_pass = envStr("PD_NET_INVITE");
 		rc.is_host = s_IsHost;
 		rc.force_relay = envStr("PD_NET_RELAY") && atoi(envStr("PD_NET_RELAY")) != 0;
 		rc.wait_secs = envStr("PD_NET_WAIT_SECS") ? atoi(envStr("PD_NET_WAIT_SECS")) : 600;
 		rc.log = netLog;
 		rc.yield = rendezvousYield;
+		rc.cancel = cancel;
 		N64NetRendezvousResult res;
 		memset(&res, 0, sizeof(res));
 		sysLogPrintf(LOG_NOTE, "netplay: %s room %s on %s", s_IsHost ? "hosting" : "joining",
-			rc.room ? rc.room : "(new)", server);
+			room ? room : "(new)", server);
 		if (n64net_rendezvous_connect(s_Sock, &rc, &res) != 0) {
 			if (!strncmp(res.error, "version", 7)) {
-				sysFatalError("Netplay: the other player has a different build of the game.\n"
-					"Both players need the same version.");
+				CONN_FAIL("The other player has a different build of the game. Both players need the same version.");
+			} else if (!strcmp(res.error, "cancelled")) {
+				CONN_FAIL("Cancelled.");
+			} else if (!strcmp(res.error, "noroom")) {
+				CONN_FAIL("Room %s isn't open. Check the code with the host.", room ? room : "");
+			} else if (!strcmp(res.error, "auth")) {
+				CONN_FAIL("The room server refused the password.");
+			} else if (!strcmp(res.error, "timeout")) {
+				CONN_FAIL("Nobody joined in time.");
 			}
-			sysFatalError("Netplay: couldn't connect through the room server (%s).", res.error);
+			CONN_FAIL("Couldn't connect through the room server (%s).", res.error);
 		}
 		s_Peer = res.peer;
 		s_HavePeer = 1;
 		sysLogPrintf(LOG_NOTE, "netplay: room %s, %s connection", res.room, res.relayed ? "relayed" : "direct");
 	}
 
-#ifdef PDNET_BUILD_ID
 	sysLogPrintf(LOG_NOTE, "netplay: build %s", PDNET_BUILD_ID);
-#endif
 	// this machine's own settings (sent to the other player; restored before pd.ini is saved)
 	memcpy(s_LocalExtCfg, g_PlayerExtCfg, sizeof(s_LocalExtCfg));
 	s_LocalMaxExplosions = g_MaxExplosions;
-
-	// everything that must be equal on both machines
-	u64 h = 0xcbf29ce484222325ull;
-	h = fnv(h, &g_OsMemSizeMb, sizeof(g_OsMemSizeMb)); // the memp heap size (set at boot)
-	h = fnv(h, &seed, sizeof(seed));
-	h = fnv(h, &stage, sizeof(stage));
-	h = fnv(h, &bots, sizeof(bots));
-	h = fnv(h, &aspect, sizeof(aspect));
-#ifdef PDNET_BUILD_ID
-	h = fnv(h, PDNET_BUILD_ID, strlen(PDNET_BUILD_ID));
-#endif
-	s_ConfigHash = h;
+	s_ConfigHash = hash;
 
 	n64net_input_config cfg;
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.num_players = 2;
 	cfg.local_player = s_IsHost ? 0 : 1;
-	cfg.session_id = (u32)(h ^ (h >> 32));
+	cfg.session_id = (u32)(hash ^ (hash >> 32));
 	cfg.start_tick = 0;
 	cfg.input_delay = 2;
 	if ((s = envStr("PD_NET_DELAY"))) {
 		cfg.input_delay = (u32)atoi(s);
-	}
-	s_Session = envStr("PD_NET_SESSION") && atoi(envStr("PD_NET_SESSION")) != 0;
-	s_Rollback = !(envStr("PD_NET_ROLLBACK") && atoi(envStr("PD_NET_ROLLBACK")) == 0) && snapshotSupported();
-	// sessions: rollback only inside gameplay stages (pdnetRollbackPoint gates the window at stage changes)
-	if ((s = envStr("PD_NET_ROLLBACK_WINDOW"))) {
-		s_RollbackWindow = (u32)atoi(s);
-	}
-	if ((s = envStr("PD_NET_ROLLBACK_FROM"))) {
-		s_RollbackFrom = atoi(s);
 	}
 	cfg.rollback_window = 0; // lockstep until s_RollbackFrom (match start), then s_RollbackWindow
 	cfg.ticks_per_second = 60;
@@ -573,35 +572,42 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	s_Net = n64net_input_create(&cfg);
 	// rollback hides most latency: keep the delay low; lockstep needs more to avoid stalls
 	n64net_input_set_auto_delay(s_Net, cfg.input_delay, s_Rollback ? 3 : 6);
-	if (s_Rollback) {
-		snapshotInit(PDNET_SLOTS);
-		rollbackEnableRoomCache(); // before the stage loads its rooms
-	}
 
 	sysLogPrintf(LOG_NOTE, "netplay: %s on UDP %d, waiting up to %d s for the %s", s_IsHost ? "host" : "guest", port,
 		s_WaitSecs, s_IsHost ? "guest" : "host");
 
 	// handshake: the guest says HELLO until the host answers; the host answers every HELLO
-	const u64 deadline = nowUsecs() + (u64)s_WaitSecs * 1000000ull;
-	u64 nextHello = 0;
-	for (;;) {
-		if (pollSocket()) {
-			break;
+	{
+		const u64 deadline = nowUsecs() + (u64)s_WaitSecs * 1000000ull;
+		u64 nextHello = 0;
+		s_HandshakeMismatch = 0;
+		for (;;) {
+			if (pollSocket()) {
+				break;
+			}
+			if (s_HandshakeMismatch) {
+				CONN_FAIL("Netplay: the host's match settings or game build differ from ours.\n"
+					"Both players need the same build, PD_SEED, stage, PD_REPLAY_BOTS, PD_ASPECT and Game.MemorySize.");
+			}
+			if (cancel && *cancel) {
+				CONN_FAIL("Cancelled.");
+			}
+			const u64 now = nowUsecs();
+			if (now > deadline) {
+				CONN_FAIL("Netplay: the other player didn't connect within %d seconds.", s_WaitSecs);
+			}
+			if (!s_IsHost && now >= nextHello) {
+				sendHandshake(PDNET_HELLO);
+				nextHello = now + 100000;
+			}
+			usleep(1000);
 		}
-		const u64 now = nowUsecs();
-		if (now > deadline) {
-			sysFatalError("Netplay: the other player didn't connect within %d seconds.", s_WaitSecs);
-		}
-		if (!s_IsHost && now >= nextHello) {
-			sendHandshake(PDNET_HELLO);
-			nextHello = now + 100000;
-		}
-		usleep(1000);
 	}
 
 	if (s_Session) {
 		// both machines must start from the same save: the guest plays on the host's image (never writing it)
 		s_SaveSize = osEepromImageSize();
+		free(s_SaveImage);
 		s_SaveImage = calloc(1, s_SaveSize);
 		const u32 chunks = (s_SaveSize + PDNET_SAVE_CHUNK - 1) / PDNET_SAVE_CHUNK;
 		if (s_IsHost) {
@@ -613,7 +619,7 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 				pollSocket();
 				const u64 now = nowUsecs();
 				if (now > deadline2) {
-					sysFatalError("Netplay: didn't receive the host's save data.");
+					CONN_FAIL("Netplay: didn't receive the host's save data.");
 				}
 				if (now >= nextReq) {
 					for (u32 c = 0; c < chunks; c++) {
@@ -630,8 +636,6 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 				}
 				usleep(1000);
 			}
-			osEepromUseImage(s_SaveImage);
-			sysLogPrintf(LOG_NOTE, "netplay: using the host's save data (%u bytes, not written here)", s_SaveSize);
 		}
 	}
 
@@ -644,7 +648,7 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 			pollSocket();
 			const u64 now = nowUsecs();
 			if (now > deadline3) {
-				sysFatalError("Netplay: didn't receive the other player's settings.");
+				CONN_FAIL("Netplay: didn't receive the other player's settings.");
 			}
 			if (now >= nextReq) {
 				sendSettings(PDNET_SET_REQ);
@@ -652,22 +656,94 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 			}
 			usleep(1000);
 		}
-		const struct extplayerconfig *hostcfg = s_IsHost ? &s_LocalExtCfg[0] : &s_PeerSettings.player;
-		const struct extplayerconfig *guestcfg = s_IsHost ? &s_PeerSettings.player : &s_LocalExtCfg[0];
-		g_PlayerExtCfg[0] = *hostcfg;
-		g_PlayerExtCfg[1] = *guestcfg;
-		g_MaxExplosions = s_IsHost ? s_LocalMaxExplosions : s_PeerSettings.maxexplosions;
-		s_SettingsApplied = 1;
-		sysLogPrintf(LOG_NOTE, "netplay: settings: player 1 fov %.0f, player 2 fov %.0f, max explosions %d",
-			g_PlayerExtCfg[0].fovy, g_PlayerExtCfg[1].fovy, g_MaxExplosions);
 	}
+	return 0;
 
+fail:
+	sysLogPrintf(LOG_WARNING, "netplay: %s", s_ConnError);
+	if (s_Net) {
+		n64net_input_destroy(s_Net);
+		s_Net = NULL;
+	}
+	if (s_Sock >= 0) {
+		close(s_Sock);
+		s_Sock = -1;
+	}
+	s_HavePeer = 0;
+	return -1;
+}
+
+/* Game thread, once connected: the session's shared settings take effect. */
+static void activate(void)
+{
+	if (s_Session && !s_IsHost) {
+		osEepromUseImage(s_SaveImage);
+		sysLogPrintf(LOG_NOTE, "netplay: using the host's save data (%u bytes, not written here)", s_SaveSize);
+	}
+	const struct extplayerconfig *hostcfg = s_IsHost ? &s_LocalExtCfg[0] : &s_PeerSettings.player;
+	const struct extplayerconfig *guestcfg = s_IsHost ? &s_PeerSettings.player : &s_LocalExtCfg[0];
+	g_PlayerExtCfg[0] = *hostcfg;
+	g_PlayerExtCfg[1] = *guestcfg;
+	g_MaxExplosions = s_IsHost ? s_LocalMaxExplosions : s_PeerSettings.maxexplosions;
+	s_SettingsApplied = 1;
+	sysLogPrintf(LOG_NOTE, "netplay: settings: player 1 fov %.0f, player 2 fov %.0f, max explosions %d",
+		g_PlayerExtCfg[0].fovy, g_PlayerExtCfg[1].fovy, g_MaxExplosions);
+
+	if (s_Rollback) {
+		snapshotInit(PDNET_SLOTS);
+		rollbackEnableRoomCache(); // before the stage loads its rooms
+	}
+	s_Offline = 0;
+	s_LastTick = -1;
 	s_Active = 1;
 	g_NetLocalPlayer = s_IsHost ? 0 : 1;
 	// one full-screen view per machine (PD_NET_VIEW=split = classic split screen on both)
 	g_NetFullViews = !(envStr("PD_NET_VIEW") && strcmp(envStr("PD_NET_VIEW"), "split") == 0);
 	sysLogPrintf(LOG_NOTE, "netplay: connected as player %d (%s, input delay %u)", s_IsHost ? 1 : 2,
-		s_Rollback ? "rollback" : "lockstep", cfg.input_delay);
+		s_Rollback ? "rollback" : "lockstep", n64net_input_get_delay(s_Net));
+}
+
+static u64 configHash(u64 seed, s32 stage, s32 bots, float aspect)
+{
+	// everything that must be equal on both machines
+	u64 h = 0xcbf29ce484222325ull;
+	h = fnv(h, &g_OsMemSizeMb, sizeof(g_OsMemSizeMb)); // the memp heap size (set at boot)
+	h = fnv(h, &seed, sizeof(seed));
+	h = fnv(h, &stage, sizeof(stage));
+	h = fnv(h, &bots, sizeof(bots));
+	h = fnv(h, &aspect, sizeof(aspect));
+	h = fnv(h, PDNET_BUILD_ID, strlen(PDNET_BUILD_ID));
+	return h;
+}
+
+void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
+{
+	const char *s;
+
+	if (!pdnetWanted()) {
+		return;
+	}
+
+	readEnv();
+	s_IsHost = envStr("PD_NET_HOST") && atoi(envStr("PD_NET_HOST")) != 0;
+	const char *server = envStr("PD_NET_SERVER");
+	s32 port = server ? 0 : (s_IsHost ? 7301 : 7302); // room codes: any free port
+	if ((s = envStr("PD_NET_PORT"))) {
+		port = atoi(s);
+	}
+	if (s_SimLatencyMs || s_SimJitterMs || s_SimLossPct) {
+		s_SimQueue = calloc(SIM_QUEUE, sizeof(*s_SimQueue));
+		s_SimRand ^= (u32)port;
+		sysLogPrintf(LOG_NOTE, "netplay: simulating %u ms + %u ms jitter, %u%% loss on sent packets", s_SimLatencyMs,
+			s_SimJitterMs, s_SimLossPct);
+	}
+	s_Session = envStr("PD_NET_SESSION") && atoi(envStr("PD_NET_SESSION")) != 0;
+
+	if (connectPeer(server, envStr("PD_NET_ROOM"), envStr("PD_NET_PASSWORD"), port,
+			configHash(seed, stage, bots, aspect), NULL) != 0) {
+		sysFatalError("%s", s_ConnError);
+	}
+	activate();
 }
 
 /* PD_NET_BOT / PD_TEST_BOT: wanders, turns, aims with the right stick and fires in bursts (deterministic per tick). */
@@ -1068,5 +1144,159 @@ s32 pdnetHoldWhileAway(void)
 	}
 	gfx_sdl_pump_events(); // notices the return to the foreground
 	usleep(10000);
+	return 1;
+}
+
+/* --- Online from the menus (sessions started mid-game) ---------------------
+ * pdnetOnlineHost/Join connect on a background thread while the game keeps running; once connected the game
+ * thread leaves the current stage (pdnetOnlinePoll), then at the top of the main loop (pdnetOnlineBegin) both
+ * machines restore the state the game had at the start of its main loop, switch to deterministic mode with the
+ * host's seed and start the session at the title screen, like two consoles booted together. */
+
+static pthread_t s_OnlineThread;
+static volatile s32 s_OnlineState = PDNET_ONLINE_IDLE;
+static volatile int s_OnlineCancel = 0;
+static s32 s_OnlineThreadRunning = 0;
+static char s_OnlineServer[128], s_OnlinePassword[128], s_OnlineRoom[8];
+static s32 s_OnlineLeaving = 0;
+
+static void *onlineThread(void *arg)
+{
+	(void)arg;
+	// sessions started mid-game agree on: the boot state (title), no bots, 16:9, the build and memory size
+	const u64 hash = configHash(0, 0x5a /* STAGE_TITLE */, 0, 16.f / 9.f);
+	const s32 ok = connectPeer(s_OnlineServer[0] ? s_OnlineServer : NULL, s_OnlineRoom[0] ? s_OnlineRoom : NULL,
+		s_OnlinePassword[0] ? s_OnlinePassword : NULL, envStr("PD_NET_PORT") ? atoi(envStr("PD_NET_PORT")) : 0, hash,
+		&s_OnlineCancel) == 0;
+	s_OnlineState = ok ? PDNET_ONLINE_CONNECTED : PDNET_ONLINE_FAILED;
+	return NULL;
+}
+
+static void onlineStart(s32 host, const char *server, const char *password, const char *room)
+{
+	if (s_Active || s_OnlineState == PDNET_ONLINE_CONNECTING || s_OnlineState == PDNET_ONLINE_CONNECTED) {
+		return;
+	}
+	if (s_OnlineThreadRunning) {
+		pthread_join(s_OnlineThread, NULL);
+		s_OnlineThreadRunning = 0;
+	}
+	readEnv();
+	s_IsHost = host;
+	s_Session = 1;
+	snprintf(s_OnlineServer, sizeof(s_OnlineServer), "%s", server ? server : "");
+	snprintf(s_OnlinePassword, sizeof(s_OnlinePassword), "%s", password ? password : "");
+	if (host && (!room || !room[0])) {
+		// a fresh code (no 0/O/1/I to misread)
+		static const char abc[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+		u32 x = (u32)nowUsecs() ^ (u32)(uintptr_t)&x;
+		for (s32 i = 0; i < 4; i++) {
+			x = x * 1664525u + 1013904223u;
+			s_OnlineRoom[i] = abc[(x >> 16) % (sizeof(abc) - 1)];
+		}
+		s_OnlineRoom[4] = '\0';
+	} else {
+		snprintf(s_OnlineRoom, sizeof(s_OnlineRoom), "%s", room ? room : "");
+		for (char *c = s_OnlineRoom; *c; c++) {
+			if (*c >= 'a' && *c <= 'z') *c -= 'a' - 'A';
+		}
+	}
+	s_SessionSeed = host ? (nowUsecs() * 6364136223846793005ull + 1442695040888963407ull) : 0;
+	s_OnlineCancel = 0;
+	s_OnlineState = PDNET_ONLINE_CONNECTING;
+	s_ConnError[0] = '\0';
+	if (pthread_create(&s_OnlineThread, NULL, onlineThread, NULL) != 0) {
+		snprintf(s_ConnError, sizeof(s_ConnError), "Couldn't start the network thread.");
+		s_OnlineState = PDNET_ONLINE_FAILED;
+		return;
+	}
+	s_OnlineThreadRunning = 1;
+}
+
+void pdnetOnlineHost(const char *server, const char *password)
+{
+	onlineStart(1, server, password, NULL);
+}
+
+void pdnetOnlineJoin(const char *server, const char *password, const char *room)
+{
+	onlineStart(0, server, password, room);
+}
+
+void pdnetOnlineCancel(void)
+{
+	if (s_OnlineState == PDNET_ONLINE_CONNECTING) {
+		s_OnlineCancel = 1;
+	}
+}
+
+s32 pdnetOnlineState(void)
+{
+	return s_OnlineState;
+}
+
+const char *pdnetOnlineRoom(void)
+{
+	return s_OnlineRoom;
+}
+
+const char *pdnetOnlineError(void)
+{
+	return s_ConnError;
+}
+
+void pdnetOnlineDismiss(void)
+{
+	if (s_OnlineState == PDNET_ONLINE_FAILED) {
+		s_OnlineState = PDNET_ONLINE_IDLE;
+	}
+}
+
+s32 pdnetOnlinePoll(void)
+{
+	// test aid PD_NET_LATE=seconds: play offline that long, then host (PD_NET_HOST=1) or join like the Online menu
+	// (PD_NET_SERVER + PD_NET_ROOM, or PD_NET_PEER direct)
+	static u64 lateAt = 0;
+	if (envStr("PD_NET_LATE") && s_OnlineState == PDNET_ONLINE_IDLE && !s_Active) {
+		if (!lateAt) {
+			lateAt = nowUsecs() + (u64)(atof(envStr("PD_NET_LATE")) * 1e6);
+		} else if (nowUsecs() >= lateAt) {
+			lateAt = ~0ull;
+			const s32 host = envStr("PD_NET_HOST") && atoi(envStr("PD_NET_HOST")) != 0;
+			sysLogPrintf(LOG_NOTE, "netplay: test: %s now (PD_NET_LATE)", host ? "hosting" : "joining");
+			onlineStart(host, envStr("PD_NET_SERVER"), envStr("PD_NET_PASSWORD"), envStr("PD_NET_ROOM"));
+		}
+	}
+	// game thread, every frame: connected -> leave the current stage for the session start
+	if (s_OnlineState == PDNET_ONLINE_CONNECTED && !s_OnlineLeaving) {
+		s_OnlineLeaving = 1;
+		sysLogPrintf(LOG_NOTE, "netplay: connected, restarting both games at the title screen");
+		return 1;
+	}
+	return 0;
+}
+
+s32 pdnetOnlineBegin(void)
+{
+	// game thread, top of the main loop
+	if (s_OnlineState != PDNET_ONLINE_CONNECTED || !s_OnlineLeaving) {
+		return 0;
+	}
+	pthread_join(s_OnlineThread, NULL);
+	s_OnlineThreadRunning = 0;
+	s_OnlineLeaving = 0;
+	s_OnlineState = PDNET_ONLINE_ACTIVE;
+	if (!s_IsHost) {
+		s_SessionSeed = (u64)s_PeerSettings.seedlo | ((u64)s_PeerSettings.seedhi << 32);
+	}
+
+	configKeepValues(); // settings in game memory keep their current values
+	if (!snapshotLoadBoot()) {
+		sysLogPrintf(LOG_WARNING, "netplay: no boot state kept; the session may not stay in sync");
+	}
+	configRestoreValues();
+	rollbackRoomCacheReset();
+	replayBeginOnline(s_SessionSeed);
+	activate();
 	return 1;
 }

@@ -9,7 +9,8 @@
 #        SESSION=1 = the whole game from boot (title, menus) instead of a direct match;
 #        TIMELIMIT=minutes = the match ends (then the end screen / menus);
 #        HOST_INI/GUEST_INI=<pd.ini> = start that side with these settings;
-#        GUEST_FRAMES=n = the guest quits after n ticks; KILL_GUEST=s = kill -9 the guest after s seconds)
+#        GUEST_FRAMES=n = the guest quits after n ticks; KILL_GUEST=s = kill -9 the guest after s seconds;
+#        LATE=4,9 = each side plays offline 4 / 9 s, then connects from the running game (Online menu path))
 set -uo pipefail
 cd "$(dirname "$0")/../../build"
 STAGE=${STAGE:-0x32}; BOTS=${BOTS:-2}; FRAMES=${FRAMES:-1801}; SEED=${SEED:-7}; DELAY=${DELAY:-2}
@@ -17,6 +18,7 @@ RENDERER=${RENDERER:-opengl}; HOST_BOT=${HOST_BOT:-11}; GUEST_BOT=${GUEST_BOT:-2
 out=net-test/$(date +%Y%m%d-%H%M%S); mkdir -p "$out/host" "$out/guest"
 # HOST_SAVE=<eeprom.bin>: the host starts from a copy of that save (the original is never touched)
 [ -n "${HOST_SAVE:-}" ] && cp "$HOST_SAVE" "$out/host/eeprom.bin"
+[ -n "${GUEST_SAVE:-}" ] && cp "$GUEST_SAVE" "$out/guest/eeprom.bin"
 # HOST_INI / GUEST_INI=<pd.ini>: start that side from a copy of these settings
 [ -n "${HOST_INI:-}" ] && cp "$HOST_INI" "$out/host/pd.ini"
 [ -n "${GUEST_INI:-}" ] && cp "$GUEST_INI" "$out/guest/pd.ini"
@@ -25,6 +27,15 @@ stagearg=(--boot-stage "$STAGE")
 if [ "${SESSION:-0}" = 1 ]; then sim+=(PD_NET_SESSION=1); stagearg=(); fi
 [ -n "${TIMELIMIT:-}" ] && sim+=(PD_REPLAY_TIMELIMIT=$TIMELIMIT)
 common=("${sim[@]}" PD_SEED=$SEED PD_REPLAY_BOTS=$BOTS PD_REPLAY_FRAMES=$FRAMES PD_NET_DELAY=$DELAY PD_RENDERER=$RENDERER)
+# LATE=h,g: each copy plays offline (title, attract demo) for h / g seconds, then hosts / joins from the running
+# game like the Online menu; both restart at the title screen together (no boot-time settings needed)
+if [ -n "${LATE:-}" ]; then
+    stagearg=()
+    common=("${sim[@]}" PD_REPLAY_FRAMES=$FRAMES PD_NET_DELAY=$DELAY PD_RENDERER=$RENDERER)
+    hostlate=(PD_NET_LATE=${LATE%,*}); guestlate=(PD_NET_LATE=${LATE#*,})
+else
+    hostlate=(); guestlate=()
+fi
 hostbot=(); [ "$HOST_BOT" != 0 ] && hostbot=(PD_NET_BOT=$HOST_BOT)
 # SERVER=local: a room server on 127.0.0.1:7790 (n64net/server/rendezvous.py) and room codes instead of
 # addresses (ROOM=PDTS, RELAY=1 forces the relay path)
@@ -39,11 +50,11 @@ else
     hostnet=(PD_NET_PORT=7301)
     guestnet=(PD_NET_PEER=127.0.0.1:7301 PD_NET_PORT=7302)
 fi
-env "${common[@]}" ${hostbot[@]+"${hostbot[@]}"} "${hostnet[@]}" PD_NET_HOST=1 \
+env "${common[@]}" ${hostlate[@]+"${hostlate[@]}"} ${hostbot[@]+"${hostbot[@]}"} "${hostnet[@]}" PD_NET_HOST=1 \
     ./pd.arm64 ${stagearg[@]+"${stagearg[@]}"} --savedir "$PWD/$out/host" > "$out/host.log" 2>&1 &
 hpid=$!
 sleep 1
-env "${common[@]}" ${DESYNC_TEST:+PD_NET_TEST_DESYNC=$DESYNC_TEST} ${GUEST_FRAMES:+PD_REPLAY_FRAMES=$GUEST_FRAMES} \
+env "${common[@]}" ${guestlate[@]+"${guestlate[@]}"} ${DESYNC_TEST:+PD_NET_TEST_DESYNC=$DESYNC_TEST} ${GUEST_FRAMES:+PD_REPLAY_FRAMES=$GUEST_FRAMES} \
     PD_NET_BOT=$GUEST_BOT "${guestnet[@]}" \
     ./pd.arm64 ${stagearg[@]+"${stagearg[@]}"} --savedir "$PWD/$out/guest" > "$out/guest.log" 2>&1 &
 gpid=$!

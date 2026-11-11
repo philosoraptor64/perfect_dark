@@ -21,4 +21,8 @@ s32 snapshotCompare(s32 slota, s32 slotb, char *report, size_t reportlen);
 f64 snapshotLastSaveMs(void);
 f64 snapshotLastLoadMs(void);
 
+/* the state at the start of the main loop, for online sessions started mid-game */
+void snapshotSaveBoot(void);
+s32 snapshotLoadBoot(void);
+
 #endif

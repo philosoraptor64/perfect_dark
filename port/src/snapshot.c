@@ -51,6 +51,7 @@ static struct snapslot *s_Slots = NULL;
 static s32 s_NumSlots = 0;
 static s32 s_Ready = 0;
 static f64 s_LastSaveMs = 0, s_LastLoadMs = 0;
+static struct snapslot s_BootSlot; // the state at the start of the main loop (online sessions started mid-game)
 
 static f64 nowMs(void)
 {
@@ -173,13 +174,19 @@ void snapshotInit(s32 numslots)
 	sysLogPrintf(LOG_NOTE, "snapshot: %d slots, globals %zu + %zu bytes", numslots, s_Data.size, s_Bss.size);
 }
 
+static void saveInto(struct snapslot *s);
+
 void snapshotSave(s32 slot)
 {
 	if (!s_Ready || slot < 0) {
 		return;
 	}
+	saveInto(&s_Slots[slot % s_NumSlots]);
+}
+
+static void saveInto(struct snapslot *s)
+{
 	const f64 t0 = nowMs();
-	struct snapslot *s = &s_Slots[slot % s_NumSlots];
 	struct range r[40];
 	s32 n = 0;
 	r[n++] = s_Data;
@@ -208,12 +215,32 @@ void snapshotSave(s32 slot)
 	s_LastSaveMs = nowMs() - t0;
 }
 
+static s32 loadFrom(struct snapslot *s);
+
 s32 snapshotLoad(s32 slot)
 {
 	if (!s_Ready || slot < 0) {
 		return 0;
 	}
-	struct snapslot *s = &s_Slots[slot % s_NumSlots];
+	return loadFrom(&s_Slots[slot % s_NumSlots]);
+}
+
+void snapshotSaveBoot(void)
+{
+	if (!s_Data.base && !s_Bss.base) {
+		findSections();
+	}
+	saveInto(&s_BootSlot);
+	sysLogPrintf(LOG_NOTE, "snapshot: boot state kept (%zu KB)", s_BootSlot.used / 1024);
+}
+
+s32 snapshotLoadBoot(void)
+{
+	return loadFrom(&s_BootSlot);
+}
+
+static s32 loadFrom(struct snapslot *s)
+{
 	if (!s->valid) {
 		return 0;
 	}
@@ -296,6 +323,8 @@ f64 snapshotLastLoadMs(void)
 #else
 
 s32 snapshotSupported(void) { return 0; }
+void snapshotSaveBoot(void) {}
+s32 snapshotLoadBoot(void) { return 0; }
 void snapshotInit(s32 numslots) { (void)numslots; }
 void snapshotSave(s32 slot) { (void)slot; }
 s32 snapshotLoad(s32 slot) { (void)slot; return 0; }

@@ -6,6 +6,7 @@
 #include "replaycheck.h"
 #include "pdnet.h"
 #include "rollback.h"
+#include "snapshot.h"
 #include "lib/vars.h"
 #include "constants.h"
 #include "game/camdraw.h"
@@ -376,7 +377,20 @@ void mainLoop(void)
 	rngSetSeed(g_DetFixedStep ? replayGetSeed() : osGetCount());
 
 	// Outer loop - this is infinite because ending is never changed
+	s32 bootStateKept = false;
 	while (!ending) {
+		if (!bootStateKept) {
+			// for online sessions started from the menus: both games restart from this state (pdnet.c)
+			bootStateKept = true;
+			if (!pdnetActive() && snapshotSupported()) {
+				snapshotSaveBoot();
+			}
+		}
+		if (pdnetOnlineBegin()) {
+			g_StageNum = STAGE_TITLE;
+			rngSetSeed(replayGetSeed());
+			s_DetNextNs = 0;
+		}
 		g_MainNumGfxTasks = 0;
 		g_MainGameLogicEnabled = true;
 		g_MainIsEndscreen = false;
@@ -542,6 +556,10 @@ void mainLoop(void)
 		profileReset();
 
 		while (g_MainChangeToStageNum < 0) {
+			if (pdnetOnlinePoll()) {
+				mainChangeToStage(STAGE_TITLE); // connected from the menus: both games restart together
+				break;
+			}
 			const s32 cycles = osGetCount() - g_Vars.thisframestartt;
 			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
 				if (pdnetHoldWhileAway()) {

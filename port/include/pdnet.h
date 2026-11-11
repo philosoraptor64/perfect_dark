@@ -60,6 +60,20 @@ void pdnetBotPad(s32 tick, u32 seed, OSContPad *pad);
 void pdnetRestoreLocalSettings(void);
 /* main loop, before each tick: 1 = this app is in the background, hold the game (the other player waits) */
 s32 pdnetHoldWhileAway(void);
+/* Online from the menus: connect on a background thread while the game runs (server "host:port" or NULL for
+ * PD_NET_PEER direct; Host makes a fresh room code), then both games restart at the title screen together. */
+enum { PDNET_ONLINE_IDLE, PDNET_ONLINE_CONNECTING, PDNET_ONLINE_CONNECTED, PDNET_ONLINE_FAILED, PDNET_ONLINE_ACTIVE };
+void pdnetOnlineHost(const char *server, const char *password);
+void pdnetOnlineJoin(const char *server, const char *password, const char *room);
+void pdnetOnlineCancel(void);
+void pdnetOnlineDismiss(void);   /* after a failure: back to idle */
+s32 pdnetOnlineState(void);
+const char *pdnetOnlineRoom(void);
+const char *pdnetOnlineError(void);
+/* game thread: 1 = connected, leave the current stage now (every frame) */
+s32 pdnetOnlinePoll(void);
+/* game thread, top of the main loop: 1 = the session starts now (boot state restored; go to the title) */
+s32 pdnetOnlineBegin(void);
 /* tells the other player this machine is quitting (they play on offline) */
 void pdnetShutdown(void);
 /* after each simulated tick, with the deterministic state hash */
