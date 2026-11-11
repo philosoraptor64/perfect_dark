@@ -197,6 +197,7 @@ void gfx_metal_shader_get_info(ShaderProgram* prg, uint8_t* num_inputs, bool use
 void gfx_metal_clear_shaders(void) {
     sCurrentShader = nullptr;
     sShaders.clear();
+    sPipelines.clear(); // keyed by ShaderProgram address: a new program could reuse a freed address
 }
 
 uint32_t gfx_metal_new_texture(void) {
