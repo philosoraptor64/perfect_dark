@@ -26,6 +26,9 @@
  *                            two controllers on one console; lockstep for now
  *   PD_NET_ROLLBACK=0        lockstep instead of rollback (default: rollback after PD_NET_ROLLBACK_FROM=60
  *                            ticks, window PD_NET_ROLLBACK_WINDOW=8)
+ *   PD_NET_DROP_SECS=n       the other player silent this long = gone (default 20); a player who quits says so at
+ *                            once. Then this machine plays on offline. A player whose iOS app is in the background is
+ *                            waited for without a limit (the game holds on both machines until it's back).
  *   PD_NET_TEST_DESYNC=tick  test aid: corrupt this side's RNG at that tick (sync check must report it)
  * On the iPhone (no environment variables) the same KEY=VALUE lines go in Documents/netplay.cfg; on other
  * machines PD_NET_CONFIG=<file> reads such a file. The environment wins over the file.
@@ -55,6 +58,10 @@ void pdnetBotPad(s32 tick, u32 seed, OSContPad *pad);
 /* puts this machine's own gameplay settings back (the session used both players'; called before pd.ini is
  * saved) */
 void pdnetRestoreLocalSettings(void);
+/* main loop, before each tick: 1 = this app is in the background, hold the game (the other player waits) */
+s32 pdnetHoldWhileAway(void);
+/* tells the other player this machine is quitting (they play on offline) */
+void pdnetShutdown(void);
 /* after each simulated tick, with the deterministic state hash */
 void pdnetEndTick(s32 tick, u64 hash);
 

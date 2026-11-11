@@ -91,6 +91,7 @@ static void gameInit(void)
 static void cleanup(void)
 {
 	sysLogPrintf(LOG_NOTE, "shutdown");
+	pdnetShutdown();
 	inputSaveBinds();
 	pdnetRestoreLocalSettings(); // netplay used both players' settings: save only this machine's own
 	configSave(CONFIG_PATH);

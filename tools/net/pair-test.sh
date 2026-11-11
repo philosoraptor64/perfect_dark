@@ -8,7 +8,8 @@
 #        SERVER=local [ROOM=PDTS] [RELAY=1] = connect through a local room server with a room code;
 #        SESSION=1 = the whole game from boot (title, menus) instead of a direct match;
 #        TIMELIMIT=minutes = the match ends (then the end screen / menus);
-#        HOST_INI/GUEST_INI=<pd.ini> = start that side with these settings)
+#        HOST_INI/GUEST_INI=<pd.ini> = start that side with these settings;
+#        GUEST_FRAMES=n = the guest quits after n ticks; KILL_GUEST=s = kill -9 the guest after s seconds)
 set -uo pipefail
 cd "$(dirname "$0")/../../build"
 STAGE=${STAGE:-0x32}; BOTS=${BOTS:-2}; FRAMES=${FRAMES:-1801}; SEED=${SEED:-7}; DELAY=${DELAY:-2}
@@ -42,10 +43,13 @@ env "${common[@]}" ${hostbot[@]+"${hostbot[@]}"} "${hostnet[@]}" PD_NET_HOST=1 \
     ./pd.arm64 ${stagearg[@]+"${stagearg[@]}"} --savedir "$PWD/$out/host" > "$out/host.log" 2>&1 &
 hpid=$!
 sleep 1
-env "${common[@]}" ${DESYNC_TEST:+PD_NET_TEST_DESYNC=$DESYNC_TEST} PD_NET_BOT=$GUEST_BOT "${guestnet[@]}" \
+env "${common[@]}" ${DESYNC_TEST:+PD_NET_TEST_DESYNC=$DESYNC_TEST} ${GUEST_FRAMES:+PD_REPLAY_FRAMES=$GUEST_FRAMES} \
+    PD_NET_BOT=$GUEST_BOT "${guestnet[@]}" \
     ./pd.arm64 ${stagearg[@]+"${stagearg[@]}"} --savedir "$PWD/$out/guest" > "$out/guest.log" 2>&1 &
 gpid=$!
 trap 'kill $hpid $gpid $spid 2>/dev/null' INT TERM
+# KILL_GUEST=seconds: kill -9 the guest then (a lost connection: the host must play on offline)
+[ -n "${KILL_GUEST:-}" ] && (sleep "$KILL_GUEST"; kill -9 $gpid 2>/dev/null) &
 wait $hpid; wait $gpid
 [ -n "$spid" ] && kill $spid 2>/dev/null
 for side in host guest; do

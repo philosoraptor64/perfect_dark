@@ -400,3 +400,22 @@ netplay.cfg, Metal on iOS, the UIScene app) plus Mac <-> iOS netplay over 127.0.
   configure time, so a rebuilt-but-not-reconfigured copy claimed an old commit: now `PDNET_BUILD_ID`, a hash of
   the simulation sources (src, include, port/src, port/include, n64net client) recomputed every build
   (cmake/NetBuildId.cmake -> build/generated/pdnet_build_id.h), logged as `netplay: build <id>`.
+
+## Settings, disconnects, app switching (2026-11-11, Studio)
+- **Gameplay settings:** after the handshake both sides exchange 'PDST' packets: each player's own
+  `[Game.Player1]` settings (FOV, crosshair sway/edge, crouch mode, PC controls...) go to their slot (host = player 1,
+  guest = player 2) on both machines; the host's `MaxExplosions` applies on both; `Game.MemorySize` (fixed at boot)
+  is in the handshake hash. Local values are restored before pd.ini is saved. Options-menu changes during a session
+  are simulated on both machines (menus run from the shared inputs). Test: `HOST_INI=a.ini GUEST_INI=b.ini
+  tools/net/pair-test.sh` (FOV 90 vs 75, MaxExplosions 20: applied, IN SYNC, each pd.ini keeps its own).
+- **Quitting / lost connection:** a quitting player sends BYE (pdnetShutdown); a peer silent for PD_NET_DROP_SECS
+  (20) is gone. Either way the session ends with a message ("you can keep playing on your own"; none for scripted
+  bots) and the game plays on offline: own controller drives own player, the other stands still; the guest still
+  never saves. No more fatal exit. Tests: `GUEST_FRAMES=900` (guest quits), `KILL_GUEST=20 PD_NET_DROP_SECS=5`.
+- **App switching (user's rule):** an iPhone that switches apps holds the game at once (pdnetHoldWhileAway in the
+  main loop: sends AWAY x3, stops ticking, pumps events, answers packets) and the other player waits **without a
+  limit** until BACK; a plain connection loss still ends after the drop time. Ticks must stop at once: n64net clears
+  "away" when any input from that player arrives. Simulator test: Settings for 30 s with PD_NET_DROP_SECS=10, the
+  Mac waited 30.5 s, then IN SYNC to the end. SDL does deliver WILLENTERBACKGROUND/DIDENTERFOREGROUND here
+  (logged as `app: ...`). Caveat: if iOS kills the app while it's in the background, the other player waits until
+  they quit (no signal is possible then).

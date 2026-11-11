@@ -342,15 +342,24 @@ static void gfx_sdl_get_dimensions(uint32_t* width, uint32_t* height, int32_t* p
     SDL_GetWindowPosition(wnd, static_cast<int*>(posX), static_cast<int*>(posY));
 }
 
+static void gfx_sdl_handle_events(void);
+
+// netplay (pdnet.c): process window/app events while the game is held in the background
+extern "C" void gfx_sdl_pump_events(void) {
+    gfx_sdl_handle_events();
+}
+
 static void gfx_sdl_handle_events(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
             case SDL_APP_WILLENTERBACKGROUND:
                 gfx_sdl_app_inactive = true;
+                sysLogPrintf(LOG_NOTE, "app: to the background");
                 break;
             case SDL_APP_DIDENTERFOREGROUND:
                 gfx_sdl_app_inactive = false;
+                sysLogPrintf(LOG_NOTE, "app: back in the foreground");
                 break;
             case SDL_KEYDOWN:
                 if (event.key.keysym.sym == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT)) {

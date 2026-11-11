@@ -21,6 +21,8 @@
 #include "n64net_input.h"
 #include "n64net_rendezvous.h"
 #include "pdnet_build_id.h"
+#include <stdbool.h>
+#include <SDL.h>
 
 /* See pdnet.h. Lockstep (rollback window 0) through n64net_input. */
 
@@ -28,6 +30,7 @@
 #define PDNET_HELLO 1
 #define PDNET_WELCOME 2
 #define PDNET_MISMATCH 3
+#define PDNET_BYE 4 /* the sender is quitting */
 #define PDNET_SAVE_MAGIC 0x5044534bu /* 'PDSK' host's save image, in chunks */
 #define PDNET_SAVE_REQ 1
 #define PDNET_SAVE_DATA 2
@@ -74,6 +77,14 @@ static n64net_input *s_Net = NULL;
 static u64 s_ConfigHash = 0;
 static u32 s_BotSeed = 0;
 static s32 s_WaitSecs = 60;
+
+/* The other player gone (quit = BYE, or silent for PD_NET_DROP_SECS, 20): the session ends and this machine plays on offline with its own player (the other one stands
+ * still). The guest still never saves. */
+static s32 s_Offline = 0;
+static s32 s_PeerLeft = 0;
+static s32 s_DropSecs = 20;
+static s32 s_AwaySent = 0;
+extern bool gfx_sdl_app_inactive; // gfx_sdl2.cpp: the iOS app is in the background
 
 static s32 s_LastTick = -1;
 static OSContPad s_TickPads[2];
@@ -223,6 +234,42 @@ static void sendSettings(u8 kind)
 	netSend(NULL, out, len);
 }
 
+static s32 peerGone(void)
+{
+	if (s_PeerLeft) {
+		return 1;
+	}
+	if (n64net_input_peer_away(s_Net)) {
+		return 0; // its app is in the background: wait for it as long as it takes (it says when it's back)
+	}
+	return n64net_input_peer_silence_usecs(s_Net) > (u64)s_DropSecs * 1000000ull;
+}
+
+static void goOffline(void)
+{
+	if (s_Offline) {
+		return;
+	}
+	s_Offline = 1;
+	s_WindowOpen = 0;
+	const char *why = s_PeerLeft ? "The other player left the game." : "Lost the connection to the other player.";
+	sysLogPrintf(LOG_WARNING, "netplay: %s Playing on offline.", why);
+	char msg[256];
+	snprintf(msg, sizeof(msg), "%s\n\nThe online game is over; you can keep playing on your own.%s", why,
+		s_Session && !s_IsHost ? "\nProgress isn't saved (you were playing on the host's save)." : "");
+	if (!s_BotSeed) { // scripted test runs show no dialog
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Perfect Dark", msg, NULL);
+	}
+}
+
+/* offline after a disconnect: this machine's controller drives its own player, the other player stands still */
+static void offlinePads(const OSContPad *local)
+{
+	const s32 me = s_IsHost ? 0 : 1;
+	s_TickPads[me] = *local;
+	memset(&s_TickPads[1 - me], 0, sizeof(s_TickPads[0]));
+}
+
 static s32 pollSocket(void)
 {
 	s32 started = 0;
@@ -273,7 +320,12 @@ static s32 pollSocket(void)
 		if (n >= 13 && (memcpy(&magic, buf, 4), ntohl(magic) == PDNET_HS_MAGIC)) {
 			u64 hash;
 			memcpy(&hash, buf + 5, 8);
-			if (s_IsHost && buf[4] == PDNET_HELLO) {
+			if (buf[4] == PDNET_BYE) {
+				if (s_Active && !s_PeerLeft) {
+					sysLogPrintf(LOG_NOTE, "netplay: the other player quit");
+				}
+				s_PeerLeft = 1;
+			} else if (s_IsHost && buf[4] == PDNET_HELLO) {
 				s_Peer = from; // the guest's address as the host sees it
 				s_HavePeer = 1;
 				if (hash != s_ConfigHash) {
@@ -391,6 +443,9 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 	}
 	if ((s = envStr("PD_NET_WAIT_SECS"))) {
 		s_WaitSecs = atoi(s);
+	}
+	if ((s = envStr("PD_NET_DROP_SECS"))) {
+		s_DropSecs = atoi(s) > 0 ? atoi(s) : 20;
 	}
 	if ((s = envStr("PD_NET_SIM_LATENCY"))) s_SimLatencyMs = (u32)atoi(s);
 	if ((s = envStr("PD_NET_SIM_JITTER"))) s_SimJitterMs = (u32)atoi(s);
@@ -661,6 +716,10 @@ static void fromNet(const n64net_pad *n, OSContPad *pad)
 
 static void exchangeTick(s32 tick, const OSContPad *local)
 {
+	if (s_Offline) {
+		offlinePads(local);
+		return;
+	}
 	n64net_input_set_local(s_Net, (u32)tick, toNet(local));
 
 	if (!n64net_input_ready(s_Net, (u32)tick)) {
@@ -671,11 +730,13 @@ static void exchangeTick(s32 tick, const OSContPad *local)
 			pollSocket();
 			n64net_input_resend(s_Net);
 			const u64 now = nowUsecs();
-			if (now - lastPeerCheck > 1000000) {
+			if (s_PeerLeft || now - lastPeerCheck > 1000000) {
 				lastPeerCheck = now;
-				const u64 silence = n64net_input_peer_silence_usecs(s_Net);
-				if (silence > (u64)s_WaitSecs * 1000000ull) {
-					sysFatalError("Netplay: the other player stopped responding.");
+				if (peerGone()) {
+					s_StallUsecs += now - start;
+					goOffline();
+					offlinePads(local);
+					return;
 				}
 			}
 			usleep(250);
@@ -776,11 +837,15 @@ void pdnetFilterStatus(OSContStatus *status, s32 count)
 
 void pdnetEndTick(s32 tick, u64 hash)
 {
-	if (!s_Active) {
+	if (!s_Active || s_Offline) {
 		return;
 	}
 
 	pollSocket();
+	if (peerGone()) { // rollback runs ahead without waiting: notice a departure here too
+		goOffline();
+		return;
+	}
 
 	// test aid: PD_NET_TEST_DESYNC=tick nudges this side's RNG once (the sync check must notice)
 	static s32 desyncAt = -2;
@@ -866,16 +931,15 @@ static s32 rollbackWanted(s32 tick)
 static void waitConfirmed(s32 tick)
 {
 	// all inputs up to tick - 1 confirmed (the ones the current state was built from)
-	const u64 start = nowUsecs();
-	while (tick > 0) {
+	while (tick > 0 && !s_Offline) {
 		const uint32_t c = n64net_input_confirmed_tick(s_Net);
 		if (c != UINT32_MAX && (s32)c >= tick - 1) {
 			break;
 		}
 		pollSocket();
 		n64net_input_resend(s_Net);
-		if (nowUsecs() - start > (u64)s_WaitSecs * 1000000ull) {
-			sysFatalError("Netplay: the other player stopped responding.");
+		if (peerGone()) {
+			goOffline();
 		}
 		usleep(250);
 	}
@@ -883,7 +947,7 @@ static void waitConfirmed(s32 tick)
 
 s32 pdnetRollbackActive(void)
 {
-	return s_Active && s_Rollback;
+	return s_Active && s_Rollback && !s_Offline;
 }
 
 void pdnetRollbackPoint(void)
@@ -943,7 +1007,7 @@ void pdnetRollbackPoint(void)
 
 s32 pdnetTimeSyncSkip(void)
 {
-	if (!s_Active || !s_Rollback || !s_WindowOpen) {
+	if (!s_Active || !s_Rollback || !s_WindowOpen || s_Offline) {
 		return 0;
 	}
 	pollSocket();
@@ -961,4 +1025,48 @@ void pdnetRestoreLocalSettings(void)
 		g_MaxExplosions = s_LocalMaxExplosions;
 		s_SettingsApplied = 0;
 	}
+}
+
+void pdnetShutdown(void)
+{
+	if (s_Active && !s_Offline && s_Sock >= 0) {
+		for (s32 i = 0; i < 3; i++) {
+			sendHandshake(PDNET_BYE);
+		}
+	}
+}
+
+void gfx_sdl_pump_events(void);
+
+s32 pdnetHoldWhileAway(void)
+{
+	if (!s_Active || s_Offline || g_RollbackResim) {
+		return 0;
+	}
+	if (!gfx_sdl_app_inactive) {
+		if (s_AwaySent) {
+			s_AwaySent = 0;
+			for (s32 i = 0; i < 3; i++) {
+				n64net_input_set_away(s_Net, 0);
+			}
+			sysLogPrintf(LOG_NOTE, "netplay: back");
+		}
+		return 0;
+	}
+	if (!s_AwaySent) {
+		// the game stops here at once: any input sent after AWAY would tell the other side we're back
+		s_AwaySent = 1;
+		for (s32 i = 0; i < 3; i++) {
+			n64net_input_set_away(s_Net, 1);
+		}
+		sysLogPrintf(LOG_NOTE, "netplay: away (app in the background), the game waits");
+	}
+	pollSocket();
+	if (s_PeerLeft) {
+		goOffline();
+		return 0;
+	}
+	gfx_sdl_pump_events(); // notices the return to the foreground
+	usleep(10000);
+	return 1;
 }
