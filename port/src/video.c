@@ -100,8 +100,7 @@ s32 videoInit(void)
 	gfx_msaa_level = vidMSAA;
 #ifdef __APPLE__
 	if (gfx_sdl_use_metal) {
-		// Metal backend WIP: offscreen framebuffers and MSAA arrive in plan step M6.
-		gfx_framebuffers_enabled = false;
+		// Metal backend WIP: MSAA arrives in plan step M6b.
 		gfx_msaa_level = 1;
 	}
 #endif

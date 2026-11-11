@@ -132,7 +132,22 @@ Steps:
       Possible small difference: the satellite dish looked a little more see-through on Metal (could be timing;
       check with the same frame, e.g. by pausing). Not yet checked: menus, a level, Combat Sim, the blur menu
       background (opt_blur, needs framebuffers = M6).
-- [ ] M4d. (next) Play through menus/levels on Metal vs OpenGL and fix differences; vertex ring buffer. (Original M4 text: Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
+- [x] M4d (2026-11-10): `tools/metal/compare.sh <name> <secs> [game args]` = Metal vs OpenGL window
+      screenshots (build/metal-compare/; MTL_DEBUG_LAYER=1 passes through). `--skip-intro` = CI menu,
+      `--boot-stage 0x30` = Defection. Fixed: **depth clamp** (GL enables GL_DEPTH_CLAMP; without
+      `setDepthClipMode:Clamp` the menu frames, highlight bar and arrows were clipped away). Defection level matches.
+- [x] M6a. Offscreen framebuffers (2026-11-10): per-fb BGRA8 colour (+ Depth32Float) textures, re-created on
+      resize; `start_draw_to_framebuffer` switches the pass target (`sTargetFb`); pipelines keyed by has-depth;
+      `select_texture_fb` samples the fb texture (linear clamp); `copy_framebuffer` = blit for unscaled rects
+      (GL bottom-left -> top-left), a tiny copy shader for scaled copies. **No y flips anywhere**: GL's
+      flip_y/invert_y only compensate for GL's bottom-left origin; drawable and fb textures are top-row-first in Metal.
+      Immediate copies between frames read `sFrontTex` (a blit of each presented frame, GL's "front buffer")
+      on their own command buffer. framebufferOnly = NO. Result: **the CI menu's blurred background matches GL**,
+      clean under MTL_DEBUG_LAYER. Stats line now includes copies, target switches, fb samples.
+- [ ] M6b. (next) MSAA (video.c still forces gfx_msaa_level = 1 on Metal; game_framebuffer + resolve), then
+      in-level fb effects (bondview.c: g_PrevFrameFb motion blur, g_BlurFb), different game resolution
+      (game_renders_to_framebuffer path), vertex ring buffer, decal depth-bias tuning.
+- [ ] M4e. (later) Play through menus/levels on Metal vs OpenGL and fix differences; vertex ring buffer. (Original M4 text: Textures + samplers (filters, mipmaps, clamp/mirror), vertex buffer ring, draw_triangles.
       (Visible result: the game renders.)
 - [ ] M5. Depth modes (decal/zmode, prim depth), depth range, scissor/viewport, alpha/blend.
 - [ ] M6. Framebuffers: create/update/copy/clear, MSAA resolve, fb textures (blur, motion effects,

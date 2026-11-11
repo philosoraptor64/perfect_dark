@@ -8,7 +8,7 @@ name=$1; secs=$2; shift 2
 out=metal-compare; mkdir -p "$out"
 [ -x "$out/winid" ] || swiftc -O ../tools/metal/winid.swift -o "$out/winid"
 for r in metal opengl; do
-    PD_RENDERER=$r ./pd.arm64 "$@" > "$out/$name-$r.log" 2>&1 &
+    MTL_DEBUG_LAYER=${MTL_DEBUG_LAYER:-0} PD_RENDERER=$r ./pd.arm64 "$@" > "$out/$name-$r.log" 2>&1 &
     pid=$!
     sleep "$secs"
     id=$("$out/winid" pd.arm64 | head -1)
