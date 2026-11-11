@@ -75,7 +75,30 @@ Also: `PD_REPLAY_DUMP=from:to` writes every player/chr/prop with exact (%a) valu
 the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** (phone command as above plus
 `"PD_REPLAY_BOTS":"3"`, `--savedir replay/save3 --boot-stage 0x32`).
 
-## NEXT: 2-player netplay (start here)
+## 2-player netplay: lockstep WORKS on the Mac (2026-11-11, Studio)
+- n64net submodule `external/n64net` pinned at `0e4d8af` (n64net_pad now has rstick_x/rstick_y and buttons_hi =
+  button bits 16-31, sent in an extended frame only when non-zero; other games' packets unchanged). Only
+  `client/src/n64net_input.cpp` is compiled (CMake adds it + the include dir).
+- `port/src/pdnet.c` / `port/include/pdnet.h` (env vars documented there): PD_NET_HOST=1 / PD_NET_PEER=ip:port,
+  PD_NET_PORT, PD_NET_DELAY (min; auto delay up to 6), PD_NET_BOT=seed (scripted local input incl. right stick +
+  fire), PD_NET_WAIT_SECS, PD_NET_TEST_DESYNC=tick. Netplay turns on deterministic mode; the handshake ('PDNH'
+  HELLO/WELCOME/MISMATCH on the game socket) compares an FNV of seed, stage, bots, aspect and VERSION_HASH; the
+  host learns the guest's address from HELLO. Hooks: replaycheck.c (pdnetInit at the end of replayInit;
+  replayFilterPads/Status hand over to pdnet; replayEndTick -> pdnetEndTick with the state hash); pdmain.c
+  numplayers = 2; replaySetupMatch chrslots 0x3 online. Inputs are exchanged once per tick (first pad read of the
+  tick; later reads in the same tick get the cached pads; ticks without a read still get an entry); pads 1/2 =
+  host/guest, 3/4 absent; each side samples its own controller 1. Sync check: state hash every 30 ticks
+  (n64net_sync_record); stats line every 600 ticks.
+- Test: `tools/net/pair-test.sh` (two copies on 127.0.0.1, separate --savedir under build/net-test/<stamp>/,
+  both bots; STAGE/BOTS/FRAMES/SEED/DELAY/RENDERER/HOST_BOT/GUEST_BOT/DESYNC_TEST). Results: Skedar + 2 simulants,
+  1800 ticks, **IN SYNC 61 checks**, guest stalls 1.3 s total; `DESYNC_TEST=500` -> both report DESYNC at tick 510.
+  Screenshot: 2-player split screen on both.
+- Next: (a) Mac <-> phone (needs a signed iOS build with this code: MacBook; the phone has no env vars, so add a
+  Documents/netplay.cfg like BattleShip/SpaghettiKart, read by pdnetWanted/pdnetInit); (b) one full-screen view per
+  device (as MK did) instead of split screen; (c) rollback (snapshots: globals + memp/mema heaps); (d) rendezvous
+  (room codes) via n64net_rendezvous; (e) host picks the match in the real menus (like the Smash/MK sessions).
+
+## (older) NEXT: 2-player netplay plan
 Lockstep first, then rollback, as in SpaghettiKart (`SpaghettiKart/src/port/KartNet.c` = the model: n64net_input
 with window 0, handshake, sync check). Steps: (1) add n64net as a submodule (philosoraptor64/n64net, pin the commit
 i64 uses; client/include/n64net_input.h); (2) `port/src/pdnet.c`: per-tick local pad -> n64net_input, remote pad ->

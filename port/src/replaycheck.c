@@ -9,6 +9,7 @@
 #include "constants.h"
 #include "system.h"
 #include "replaycheck.h"
+#include "pdnet.h"
 
 /* See replaycheck.h. */
 
@@ -127,7 +128,7 @@ void replayInit(void)
 	const char *s;
 
 	g_ReplayActive = (check || rec || play) ? 1 : 0;
-	g_DetFixedStep = g_ReplayActive || ((s = envStr("PD_DETERMINISTIC")) && atoi(s));
+	g_DetFixedStep = g_ReplayActive || pdnetWanted() || ((s = envStr("PD_DETERMINISTIC")) && atoi(s));
 
 	if (!g_DetFixedStep) {
 		return;
@@ -190,11 +191,14 @@ void replayInit(void)
 
 	sysLogPrintf(LOG_NOTE, "deterministic mode: fixed step, aspect %.4f, seed %llu%s%s%s", gfx_fixed_aspect,
 		(unsigned long long)s_Seed, check ? ", hash log" : "", rec ? ", recording" : "", play ? ", playback" : "");
+
+	// netplay: both machines must agree on everything above before tick 0
+	pdnetInit(s_Seed, g_StageNum, s_Bots, gfx_fixed_aspect);
 }
 
 s32 replayWantsMatch(void)
 {
-	return g_DetFixedStep && s_Bots > 0 && g_StageNum < STAGE_TITLE;
+	return g_DetFixedStep && (s_Bots > 0 || pdnetActive()) && g_StageNum < STAGE_TITLE;
 }
 
 void replaySetupMatch(void)
@@ -204,7 +208,7 @@ void replaySetupMatch(void)
 	}
 
 	g_MpSetup.stagenum = g_StageNum;
-	g_MpSetup.chrslots = 1; // player 1
+	g_MpSetup.chrslots = pdnetActive() ? 0x3 : 1; // player 1 (+ player 2 online)
 
 	for (s32 i = 0; i < s_Bots; i++) {
 		g_MpSetup.chrslots |= 1 << (MAX_PLAYERS + i);
@@ -222,6 +226,11 @@ u64 replayGetSeed(void)
 
 void replayFilterStatus(OSContStatus *status, s32 count)
 {
+	if (pdnetActive()) {
+		pdnetFilterStatus(status, count);
+		return;
+	}
+
 	if (!g_ReplayActive) {
 		return;
 	}
@@ -241,6 +250,11 @@ void replayFilterStatus(OSContStatus *status, s32 count)
 
 void replayFilterPads(OSContPad *pads, s32 count)
 {
+	if (pdnetActive()) {
+		pdnetFilterPads(pads, count, s_Tick);
+		return;
+	}
+
 	if (!g_ReplayActive) {
 		return;
 	}
@@ -341,7 +355,9 @@ static u64 hashState(u32 *outNumProps)
 		numprops++;
 	}
 
-	*outNumProps = numprops;
+	if (outNumProps) {
+		*outNumProps = numprops;
+	}
 	return h;
 }
 
@@ -383,6 +399,10 @@ void replayEndTick(void)
 			fprintf(s_HashLog, "  prop %d type %d obj %d flags %02x pos %a %a %a\n", n, pr->type, objtype, pr->flags,
 				pr->pos.x, pr->pos.y, pr->pos.z);
 		}
+	}
+
+	if (pdnetActive()) {
+		pdnetEndTick(s_Tick, hashState(NULL));
 	}
 
 	s_Tick++;

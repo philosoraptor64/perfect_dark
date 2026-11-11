@@ -4,6 +4,7 @@
 #include <PR/ultrasched.h>
 #include "lib/sched.h"
 #include "replaycheck.h"
+#include "pdnet.h"
 #include "lib/vars.h"
 #include "constants.h"
 #include "game/camdraw.h"
@@ -439,6 +440,10 @@ void mainLoop(void)
 
 			if (getNumPlayers() >= 2) {
 				numplayers = getNumPlayers();
+			}
+
+			if (pdnetActive()) {
+				numplayers = 2; // netplay: host = player 1, guest = player 2
 			}
 		}
 
