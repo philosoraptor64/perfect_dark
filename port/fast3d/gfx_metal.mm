@@ -272,7 +272,8 @@ void gfx_metal_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms
     sTextures[sBoundTexture[tile]].sampler = smp;
 }
 
-// zmode values from gfx_opengl_set_depth_mode (ZMODE_OPA 0, INTER 1, XLU 2, DEC 3).
+// zmode is the raw RDP other_mode_l field (gbi.h: ZMODE_OPA 0, ZMODE_INTER 0x400, ZMODE_XLU 0x800,
+// ZMODE_DEC 0xc00), as gfx_pc.cpp passes it.
 void gfx_metal_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim,
                               uint16_t zmode) {
     sDepthTest = depth_test;
@@ -280,9 +281,9 @@ void gfx_metal_set_depth_mode(bool depth_test, bool depth_update, bool depth_com
     sDepthDecal = false;
     if (!depth_compare) {
         sDepthFunc = MTLCompareFunctionAlways;
-    } else if (zmode == 1 /* INTER */) {
+    } else if (zmode == 0x400 /* ZMODE_INTER */) {
         sDepthFunc = MTLCompareFunctionLessEqual;
-    } else if (zmode == 3 /* DEC */) {
+    } else if (zmode == 0xc00 /* ZMODE_DEC */) {
         sDepthFunc = MTLCompareFunctionLessEqual;
         sDepthDecal = true;
     } else {
