@@ -493,4 +493,4 @@ Tested in the Mac i64: ROM import, 3 runs in one process, clean stops, 25 s run 
   tick 1800**, rtt ~30 ms, no desync, menus into a stage.
 - Log: inside i64 `pd.log` goes to the game's data folder (was i64's Documents on iOS; an old Documents/pd.log may
   remain on the 14 Pro).
-- Open: memory growth on the Mac (+55/+17/+3 MB over 3 runs); not yet seen by eye or played with a controller.
+- Memory (Mac i64, 5 runs): 38 -> 95 -> 108 -> 115 -> 117 -> 119 MB after each run: levels off at ~+2 MB/run (caches warmed in the first runs; the phone was flat). Not yet seen by eye or played with a controller.
