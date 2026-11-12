@@ -459,3 +459,17 @@ pdnet now has an external mode matching `i64/include/n64_game.h`:
 - The standalone app's own "Play Online" menu (onlinemenu.c) stays as a fallback; its dialog still hasn't been
   seen on screen (pushing it over the agent-select menu with PD_NET_TEST_MENU does nothing visible; open it from the
   Perfect Menu in Carrington Institute instead).
+
+## iPhone 14 Pro (2026-11-12, MacBook)
+- Current build (b5500c085) signed + installed on the 14 Pro (iPhone15,2, A16) over Wi-Fi (stub profile from
+  2026-11-10; expires ~2026-11-17).
+- **Combat Sim replay (Skedar, 3 simulants, 2430 ticks): 14 Pro == Mac, byte-identical.** (The hash now includes
+  g_MpSetup, so the reference is a fresh Mac run of the current build: build/replay-test/20261112-095910.)
+- **Mac <-> 14 Pro netplay: BLOCKED** on the one-time iOS local-network prompt (first netplay launch of PD on this phone;
+  nobody there to tap Allow). Phone log: "guest on UDP 7302, waiting up to 90 s for the host", the Mac host (UDP
+  7301, firewall off) never got a packet. When the user is back: launch PD on the 14 Pro once, tap Allow, then rerun:
+  phone Documents/netplay.cfg = PD_NET_PEER=<Mac IP>:7301, PD_BOOT_STAGE=0x32, PD_SEED=7, PD_REPLAY_BOTS=2,
+  PD_NET_BOT=22, PD_REPLAY_FRAMES=1800, PD_NET_WAIT_SECS=90; Mac: `cd build && PD_NET_HOST=1 PD_SEED=7
+  PD_REPLAY_BOTS=2 PD_NET_BOT=11 PD_REPLAY_FRAMES=1800 ./pd.arm64 --boot-stage 0x32`. The phone's netplay.cfg is
+  now a comment-only file (netplay off).
+- devicectl gotcha: `copy to` with a missing source file reports "Failed to retrieve the file node for <destination>".
