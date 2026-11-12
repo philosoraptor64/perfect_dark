@@ -421,8 +421,13 @@ static void loadConfigFile(void)
 	sysLogPrintf(LOG_NOTE, "netplay: %d settings from %s", n, path);
 }
 
+extern struct pdnetexternal *g_PdNetExternal;
+
 s32 pdnetWanted(void)
 {
+	if (g_PdNetExternal) {
+		return 1;   /* i64 online run: fixed step from tick 0 */
+	}
 	loadConfigFile();
 	if (envStr("PD_NET_LATE")) {
 		return 0; // test aid: connect later, from the running game (pdnetOnlinePoll)
@@ -804,6 +809,13 @@ static void externalTest(u64 seed)
 void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 {
 	const char *s;
+
+	if (g_PdNetExternal) {   /* i64: the host app's connection */
+		if (pdnetInitExternal(g_PdNetExternal) != 0) {
+			sysFatalError("%s", s_ConnError);
+		}
+		return;
+	}
 
 	if (envStr("PD_NET_EXTERNAL_TEST")) {
 		externalTest(seed);
@@ -1452,6 +1464,16 @@ s32 pdnetHostPaced(void)
 	return s_HostPaced;
 }
 
+/* i64 module: the handshake below runs on the game's coroutine; give i64 its
+ * frame back between polls instead of blocking its main thread */
+#if defined(PD_I64_MODULE)
+extern void pdmainHostYield(void);
+static void extWait(void) { pdmainHostYield(); }
+#else
+static void extWait(void) { usleep(1000); }
+#endif
+struct pdnetexternal *g_PdNetExternal = NULL;   /* set by the i64 module for an online run */
+
 s32 pdnetInitExternal(const struct pdnetexternal *x)
 {
 	readEnv();
@@ -1464,15 +1486,27 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 	s_ConnError[0] = '\0';
 
 	const struct pdnetblobhdr *h = x->blob;
-	if (!h || x->blobsize < sizeof(*h) || h->magic != PDNET_BLOB_MAGIC || h->version != 1
-			|| sizeof(*h) + h->eepromsize > x->blobsize || h->eepromsize != osEepromImageSize()) {
-		snprintf(s_ConnError, sizeof(s_ConnError), "Netplay: the host's session data is missing or from another version.");
+	const s32 noBlob = !h || x->blobsize == 0;   /* i64 doesn't deliver session blobs yet */
+	if (!noBlob && (x->blobsize < sizeof(*h) || h->magic != PDNET_BLOB_MAGIC || h->version != 1
+			|| sizeof(*h) + h->eepromsize > x->blobsize || h->eepromsize != osEepromImageSize())) {
+		snprintf(s_ConnError, sizeof(s_ConnError), "Netplay: the host's session data is from another version.");
 		return -1;
 	}
 	free(s_SaveImage);
-	s_SaveSize = h->eepromsize;
-	s_SaveImage = malloc(s_SaveSize);
-	memcpy(s_SaveImage, (const u8 *)x->blob + sizeof(*h), s_SaveSize);
+	if (noBlob) {
+		/* the host's save travels over the channel instead (PDSK chunks, as in the
+		 * boot-time connection): the host serves it from pollSocket */
+		s_SaveSize = osEepromImageSize();
+		s_SaveImage = calloc(1, s_SaveSize);
+		s_SaveChunksHave = 0;
+		if (s_IsHost) {
+			osEepromGetImage(s_SaveImage);
+		}
+	} else {
+		s_SaveSize = h->eepromsize;
+		s_SaveImage = malloc(s_SaveSize);
+		memcpy(s_SaveImage, (const u8 *)x->blob + sizeof(*h), s_SaveSize);
+	}
 
 	memcpy(s_LocalExtCfg, g_PlayerExtCfg, sizeof(s_LocalExtCfg));
 	s_LocalMaxExplosions = g_MaxExplosions;
@@ -1494,6 +1528,34 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 	s_HavePeerSettings = 0;
 	const u64 deadline = nowUsecs() + (u64)s_WaitSecs * 1000000ull;
 	u64 nextReq = 0;
+	if (noBlob && !s_IsHost) {
+		const u32 chunks = (s_SaveSize + PDNET_SAVE_CHUNK - 1) / PDNET_SAVE_CHUNK;
+		while (s_SaveChunksHave != (1u << chunks) - 1) {
+			pollSocket();
+			const u64 now = nowUsecs();
+			if (s_PeerLeft || now > deadline) {
+				snprintf(s_ConnError, sizeof(s_ConnError), "Netplay: didn't receive the host's save data.");
+				n64net_input_destroy(s_Net);
+				s_Net = NULL;
+				return -1;
+			}
+			if (now >= nextReq) {
+				for (u32 c = 0; c < chunks; c++) {
+					if (!(s_SaveChunksHave & (1u << c))) {
+						u8 req[8] = { 0 };
+						const u32 m = htonl(PDNET_SAVE_MAGIC);
+						memcpy(req, &m, 4);
+						req[4] = PDNET_SAVE_REQ;
+						req[5] = (u8)c;
+						netSend(NULL, req, 8);
+					}
+				}
+				nextReq = now + 50000;
+			}
+			extWait();
+		}
+		nextReq = 0;
+	}
 	while (!s_HavePeerSettings) {
 		pollSocket();
 		const u64 now = nowUsecs();
@@ -1507,12 +1569,13 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 			sendSettings(PDNET_SET_REQ);
 			nextReq = now + 50000;
 		}
-		usleep(1000);
+		extWait();
 	}
 
 	replayBeginOnline(x->seed);
 	activate();
-	g_MaxExplosions = h->maxexplosions; // the host's game-wide settings, from the blob
+	// the host's game-wide settings: from the blob, else from its settings packet
+	g_MaxExplosions = !noBlob ? h->maxexplosions : (s_IsHost ? s_LocalMaxExplosions : s_PeerSettings.maxexplosions);
 	sysLogPrintf(LOG_NOTE, "netplay: running on the host app's connection (player %d)", s_IsHost ? 1 : 2);
 	return 0;
 }

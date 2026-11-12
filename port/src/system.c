@@ -88,7 +88,18 @@ void sysInit(void)
 {
 	startTick = sysGetMicroseconds();
 
-#ifdef PD_IOS
+#if defined(PD_I64_MODULE)
+	// inside i64: always log, into the game's own data folder (--savedir = n64_host.data_dir)
+	snprintf(logPath, sizeof(logPath), "%s/%s", sysArgGetString("--savedir") ? sysArgGetString("--savedir") : ".", LOG_FNAME);
+	{
+		FILE *f = fopen(logPath, "wb");
+		if (f) {
+			fclose(f);
+		} else {
+			logPath[0] = '\0';
+		}
+	}
+#elif defined(PD_IOS)
 	// iPhone: always log, into Documents (visible in the Files app, copyable with devicectl).
 	snprintf(logPath, sizeof(logPath), "%s/Documents/%s", getenv("HOME") ? getenv("HOME") : ".", LOG_FNAME);
 	{

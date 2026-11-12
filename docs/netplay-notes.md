@@ -481,5 +481,16 @@ pdnet now has an external mode matching `i64/include/n64_game.h`:
 main thread; pdmain.c yields once per main-loop pass; glue port/src/i64_module.c (restores __DATA + __PDSNAP at stop;
 sysMem blocks in their own malloc zone, destroyed at stop; host window/audio; --basedir/--savedir = data_dir).
 Tested in the Mac i64: ROM import, 3 runs in one process, clean stops, 25 s run (1.4 ms/frame in the game).
-Open: memory +55/+17/+3 MB over 3 runs (levels off?), not yet seen by eye; iOS module build; online (pdnet external
-needs a session blob i64 doesn't send: add a channel handshake like GE's, or blob delivery in i64); pause = frames stop.
+- **iPhone 14 Pro inside i64:** iOS module `cmake -S . -B build-ios-module -G Ninja -DCMAKE_SYSTEM_NAME=iOS
+  -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release
+  -DPD_I64_MODULE=ON -DSDL2_INCLUDE_DIR=<i64>/deps-out/ios/include/SDL2 -DSDL2_LIBRARY=<i64>/deps-out/ios/lib/libSDL2-2.0.0.dylib
+  -DSDL2MAIN_LIBRARY=<any libSDL2main.a, unused>` -> i64/modules/ios/. 2 runs (600 frames), clean stop + restart,
+  footprint 63 -> 68 MB; 13.3 ms/frame on the first run (shaders), 3.3 ms after.
+- **Online through i64:** pdnetInitExternal on i64's channel (module sets g_PdNetExternal; hostpaced = 1, one tick
+  per frame). i64 sends no session blob yet, so the host's save comes over the channel (PDSK chunks, as in the
+  boot-time connection) and the guest takes the host's MaxExplosions from its settings packet. The handshake waits
+  yield to i64 (no blocked main thread). Mac pair (PD_TEST_BOT=7): 40/40 sync checks; **Mac <-> 14 Pro: 61/61 by
+  tick 1800**, rtt ~30 ms, no desync, menus into a stage.
+- Log: inside i64 `pd.log` goes to the game's data folder (was i64's Documents on iOS; an old Documents/pd.log may
+  remain on the 14 Pro).
+- Open: memory growth on the Mac (+55/+17/+3 MB over 3 runs); not yet seen by eye or played with a controller.

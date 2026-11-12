@@ -18,8 +18,9 @@
  * folder (--basedir/--savedir = host->data_dir: the ROM pd.ntsc-final.z64,
  * pd.ini, saves).
  *
- * Not yet: online (pdnet external mode needs a session blob; i64 doesn't send
- * one yet), pause.
+ * Online: pdnet's external mode on i64's game channel; without a session blob
+ * (i64 doesn't send one yet) the host's save comes over the channel. Pause:
+ * the game only runs when i64 calls frame(), so it waits by itself.
  */
 #if defined(PD_I64_MODULE)
 
@@ -48,6 +49,19 @@ extern void audioSetHostOutput(void (*write)(const short *, unsigned, unsigned),
 extern void *g_gfxExternalWindow;                       /* gfx_sdl2.cpp */
 extern volatile int g_PdEmbedded;                       /* pdmain.c */
 extern volatile int g_PdQuitRequested;                  /* gfx_sdl2.cpp / system.c */
+
+/* pdnet.h (same layout) */
+struct pdnetexternal {
+	int32_t localplayer;
+	uint64_t seed;
+	const void *blob;
+	uint32_t blobsize;
+	int (*send)(const void *data, uint32_t size);
+	int (*recv)(void *buf, uint32_t cap);
+	int32_t hostpaced;
+};
+extern struct pdnetexternal *g_PdNetExternal;
+extern void pdnetExternalEvent(int32_t event);
 
 /* pdcoro_arm64.S */
 extern void pdcoro_switch(void **save_sp, void *load_sp);
@@ -301,8 +315,8 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 		snprintf(err, err_size, "i64 and this game module disagree on the interface version");
 		return 1;
 	}
-	if (launch->mode == N64_LAUNCH_ONLINE) {
-		snprintf(err, err_size, "online play isn't in the Perfect Dark module yet");
+	if (launch->mode == N64_LAUNCH_ONLINE && (!host->net_send || !host->net_recv || launch->local_player > 1)) {
+		snprintf(err, err_size, "online needs i64's game channel and 2 players");
 		return 1;
 	}
 	if (!host->data_dir || !host->data_dir[0]) { snprintf(err, err_size, "missing folders"); return 1; }
@@ -323,6 +337,20 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 	g_gfxExternalWindow = host->window;
 	g_PdEmbedded = 1;
 	if (host->audio_write) audioSetHostOutput(hostAudioWrite, hostAudioBuffered);
+	static struct pdnetexternal ext;   /* reset with the globals after the run */
+	if (launch->mode == N64_LAUNCH_ONLINE) {
+		/* the save and settings travel over the channel (no session blob from i64 yet);
+		 * i64 calls the frames at 60 Hz and the game ticks once per frame */
+		memset(&ext, 0, sizeof(ext));
+		ext.localplayer = (int32_t)launch->local_player;
+		ext.seed = launch->seed;
+		ext.blob = launch->session_blob;
+		ext.blobsize = launch->session_blob_size;
+		ext.send = host->net_send;
+		ext.recv = host->net_recv;
+		ext.hostpaced = 1;
+		g_PdNetExternal = &ext;
+	}
 	if (!sStack) {
 		sStack = mmap(NULL, GUARD_SIZE + GAME_STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 		if (sStack == MAP_FAILED) { sStack = NULL; snprintf(err, err_size, "out of memory"); return 1; }
@@ -342,6 +370,10 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
 {
 	if (!sRunning || g_PdQuitRequested) return N64_GAME_FRAME_EXIT;
+	if (sHost && sHost->net_poll_event) {
+		int ev;
+		while ((ev = sHost->net_poll_event()) != 0) pdnetExternalEvent(ev);   /* same numbers */
+	}
 	runGame();
 	return g_PdQuitRequested ? N64_GAME_FRAME_EXIT : N64_GAME_FRAME_CONTINUE;
 }
