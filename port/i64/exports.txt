@@ -1,0 +1,7 @@
+_n64_game_get_info
+_n64_game_import_rom
+_n64_game_session_blob
+_n64_game_start
+_n64_game_frame
+_n64_game_set_paused
+_n64_game_stop

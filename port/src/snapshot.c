@@ -60,13 +60,16 @@ static f64 nowMs(void)
 	return (f64)ts.tv_sec * 1000.0 + (f64)ts.tv_nsec / 1e6;
 }
 
+/* this image (the app, or the i64 module dylib) */
+extern const char __dso_handle;
+
 static void findSections(void)
 {
 	unsigned long size = 0;
-	s_Data.base = getsectiondata(&_mh_execute_header, PD_SNAPSHOT_SEGMENT, "__data", &size);
+	s_Data.base = getsectiondata((const struct mach_header_64 *)&__dso_handle, PD_SNAPSHOT_SEGMENT, "__data", &size);
 	s_Data.size = s_Data.base ? size : 0;
 	size = 0;
-	s_Bss.base = getsectiondata(&_mh_execute_header, PD_SNAPSHOT_SEGMENT, "__bss", &size);
+	s_Bss.base = getsectiondata((const struct mach_header_64 *)&__dso_handle, PD_SNAPSHOT_SEGMENT, "__bss", &size);
 	s_Bss.size = s_Bss.base ? size : 0;
 }
 

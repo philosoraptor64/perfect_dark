@@ -388,7 +388,18 @@ add_custom_target(pd_headers ALL DEPENDS ${JSON_HEADERS})
 # Game target
 
 set(BIN_NAME "pd${BIN_REGION}.${TARGET_ARCH}")
-add_executable(pd ${SRC})
+# i64 module: the game as a shared library exporting only n64_game_*
+# (port/src/i64_module.c, port/include/i64/n64_game.h); i64 provides SDL,
+# the window and the audio output.
+option(PD_I64_MODULE "Build the game as an i64 module (libpd_i64.dylib)" OFF)
+if(PD_I64_MODULE)
+  enable_language(ASM)
+  add_compile_definitions(PD_I64_MODULE=1)
+  add_library(pd SHARED ${SRC} "${CMAKE_SOURCE_DIR}/port/src/pdcoro_arm64.S")
+  target_link_options(pd PRIVATE "-Wl,-exported_symbols_list,${CMAKE_SOURCE_DIR}/port/i64/exports.txt")
+else()
+  add_executable(pd ${SRC})
+endif()
 add_dependencies(pd pd_headers)
 
 # netplay build fingerprint (cmake/NetBuildId.cmake), refreshed at every build
@@ -403,7 +414,10 @@ target_link_libraries(pd ${LIBS})
 if(APPLE)
   target_link_libraries(pd "-framework Metal" "-framework QuartzCore" "-framework Foundation")
 endif()
-if(PD_IOS)
+if(PD_IOS AND PD_I64_MODULE)
+  target_link_libraries(pd "-framework UIKit" "-framework CoreGraphics" "-framework GameController"
+    "-framework AVFoundation" "-framework AudioToolbox" "-framework QuartzCore" "-framework Metal" "-framework Foundation")
+elseif(PD_IOS)
   target_link_libraries(pd "${SDL2MAIN_LIBRARY}"
     "-framework UIKit" "-framework CoreGraphics" "-framework CoreMotion" "-framework GameController"
     "-framework CoreHaptics" "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio"
@@ -417,7 +431,11 @@ if(PD_IOS)
     MACOSX_BUNDLE_BUNDLE_VERSION "1"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${PD_IOS_BUNDLE_ID}")
 endif()
-set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
+if(PD_I64_MODULE)
+  set_target_properties(pd PROPERTIES OUTPUT_NAME "pd_i64")
+else()
+  set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
+endif()
 if(WIN32)
   set_target_properties(pd PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()

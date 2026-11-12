@@ -1560,3 +1560,19 @@ PD_CONSTRUCTOR static void inputConfigInit(void)
 		}
 	}
 }
+
+/* i64 module stop: close the controllers (i64 re-announces them at the next start) */
+void inputShutdown(void)
+{
+	for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
+		if (pads[i]) {
+			SDL_GameControllerClose(pads[i]);
+			pads[i] = NULL;
+		}
+	}
+	SDL_SetRelativeMouseMode(SDL_FALSE);
+	SDL_DelEventWatch(inputEventFilter, NULL);   /* re-added by the next inputInit */
+	if (SDL_WasInit(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC)) {
+		SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC);
+	}
+}

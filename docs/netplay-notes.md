@@ -473,3 +473,13 @@ pdnet now has an external mode matching `i64/include/n64_game.h`:
   PD_REPLAY_BOTS=2 PD_NET_BOT=11 PD_REPLAY_FRAMES=1800 ./pd.arm64 --boot-stage 0x32`. The phone's netplay.cfg is
   now a comment-only file (netplay off).
 - devicectl gotcha: `copy to` with a missing source file reports "Failed to retrieve the file node for <destination>".
+
+## i64 module (MacBook, 2026-11-12, first working version)
+`-DPD_I64_MODULE=ON` -> `libpd_i64.dylib` (id `pd-us`, ROM SHA-1 af8788ac...). Mac: `cmake -S . -B build-mac-module -G Ninja
+-DPD_I64_MODULE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSDL2_LIBRARY=/opt/homebrew/lib/libSDL2.dylib`, then i64's
+`scripts/install-module.sh`. PD's single-threaded main loop runs as a coroutine (port/src/pdcoro_arm64.S) on i64's
+main thread; pdmain.c yields once per main-loop pass; glue port/src/i64_module.c (restores __DATA + __PDSNAP at stop;
+sysMem blocks in their own malloc zone, destroyed at stop; host window/audio; --basedir/--savedir = data_dir).
+Tested in the Mac i64: ROM import, 3 runs in one process, clean stops, 25 s run (1.4 ms/frame in the game).
+Open: memory +55/+17/+3 MB over 3 runs (levels off?), not yet seen by eye; iOS module build; online (pdnet external
+needs a session blob i64 doesn't send: add a channel handshake like GE's, or blob delivery in i64); pause = frames stop.

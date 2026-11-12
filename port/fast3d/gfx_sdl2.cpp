@@ -30,9 +30,20 @@ static void get_drawable_size(int* w, int* h) {
     }
 }
 
+/* i64 module: the host's SDL Metal window (n64_host.window). PD makes only its own
+ * Metal view on it and never resizes, moves, retitles or destroys it. */
+extern "C" void *g_gfxExternalWindow;
+void *g_gfxExternalWindow = nullptr;
+#if defined(PD_I64_MODULE)
+extern "C" volatile int g_PdQuitRequested;
+#define PD_QUIT() (g_PdQuitRequested = 1)
+#else
+#define PD_QUIT() exit(0)
+#endif
+
 static bool init_metal_window(const char* title, int posX, int posY, int w, int h, Uint32 flags) {
     flags = (flags & ~SDL_WINDOW_OPENGL) | SDL_WINDOW_METAL;
-    wnd = SDL_CreateWindow(title, posX, posY, w, h, flags);
+    wnd = g_gfxExternalWindow ? (SDL_Window*)g_gfxExternalWindow : SDL_CreateWindow(title, posX, posY, w, h, flags);
     if (!wnd) {
         sysLogPrintf(LOG_WARNING, "SDL: could not open Metal window: %s", SDL_GetError());
         return false;
@@ -40,7 +51,7 @@ static bool init_metal_window(const char* title, int posX, int posY, int w, int 
     metal_view = SDL_Metal_CreateView(wnd);
     if (!metal_view) {
         sysLogPrintf(LOG_WARNING, "SDL: could not create Metal view: %s", SDL_GetError());
-        SDL_DestroyWindow(wnd);
+        if (!g_gfxExternalWindow) SDL_DestroyWindow(wnd);
         wnd = nullptr;
         return false;
     }
@@ -91,6 +102,7 @@ static void gfx_sdl_set_fullscreen_flag(int32_t mode) {
 
 static void set_fullscreen(bool on, bool call_callback) {
     fullscreen_state = on;
+    if (g_gfxExternalWindow) return;
     SDL_SetWindowFullscreen(wnd, on ? fullscreen_flag : 0);
     if (call_callback && on_fullscreen_changed_callback) {
         on_fullscreen_changed_callback(on);
@@ -99,6 +111,7 @@ static void set_fullscreen(bool on, bool call_callback) {
 
 static void set_maximize_window(bool on) {
 	maximized_state = on;
+	if (g_gfxExternalWindow) return;
 	if (on) {
 		SDL_MaximizeWindow(wnd);
 	} else {
@@ -129,7 +142,7 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     }
 #endif
 
-#ifdef PD_IOS
+#if defined(PD_IOS) && !defined(PD_I64_MODULE)   /* inside i64 the app sets the hints */
     // SDL's HIDAPI joystick driver opens CoreBluetooth, and iOS kills an app that does that
     // without NSBluetoothAlwaysUsageDescription. Controllers come through GameController (MFi)
     // instead, as in our other iOS ports. Also: the accelerometer is not a joystick.
@@ -318,6 +331,7 @@ static void gfx_sdl_get_centered_positions(int32_t width, int32_t height, int32_
 
 static void gfx_sdl_set_closest_resolution(int32_t width, int32_t height, bool should_center) {
     const SDL_DisplayMode mode = {.w = width, .h = height};
+    if (g_gfxExternalWindow) return;
     const int disp_idx = SDL_GetWindowDisplayIndex(wnd);
     SDL_DisplayMode closest = {};
     if (SDL_GetClosestDisplayMode(disp_idx, &mode, &closest)) {
@@ -333,6 +347,7 @@ static void gfx_sdl_set_closest_resolution(int32_t width, int32_t height, bool s
 }
 
 static void gfx_sdl_set_dimensions(uint32_t width, uint32_t height, int32_t posX, int32_t posY) {
+    if (g_gfxExternalWindow) return;
     SDL_SetWindowSize(wnd, width, height);
     SDL_SetWindowPosition(wnd, posX, posY);
 }
@@ -377,11 +392,11 @@ static void gfx_sdl_handle_events(void) {
                            event.window.windowID == SDL_GetWindowID(wnd)) {
                     // We listen specifically for main window close because closing main window
                     // on macOS does not trigger SDL_Quit.
-                    exit(0);
+                    PD_QUIT();
                 }
                 break;
             case SDL_QUIT:
-                exit(0);
+                PD_QUIT();
                 break;
         }
     }
@@ -456,7 +471,7 @@ static void *gfx_sdl_get_window_handle(void) {
 }
 
 static void gfx_sdl_set_window_title(const char *title) {
-    SDL_SetWindowTitle(wnd, title);
+    if (!g_gfxExternalWindow) SDL_SetWindowTitle(wnd, title);
 }
 
 static int gfx_sdl_get_swap_interval(void) {
@@ -539,3 +554,13 @@ struct GfxWindowManagerAPI gfx_sdl = {
     gfx_sdl_get_swap_interval,
     gfx_sdl_set_swap_interval,
 };
+
+/* i64 module stop: remove PD's Metal view from the host's window (the next
+ * start makes a new one), forget the window. */
+extern "C" void gfx_sdl_teardown_external(void) {
+    if (metal_view) {
+        SDL_Metal_DestroyView(metal_view);
+        metal_view = nullptr;
+    }
+    wnd = nullptr;
+}

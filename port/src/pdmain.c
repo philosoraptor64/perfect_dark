@@ -277,6 +277,12 @@ void mainInit(void)
 	g_MainIsBooting = 0;
 }
 
+#if defined(PD_I64_MODULE)
+volatile int g_PdEmbedded = 0;          /* running inside i64 (i64_module.c) */
+volatile int g_PdQuitRequested = 0;     /* the game or the player asked to quit */
+void pdmainHostYield(void);
+#endif
+
 void mainProc(void)
 {
 	mainInit();
@@ -556,6 +562,13 @@ void mainLoop(void)
 		profileReset();
 
 		while (g_MainChangeToStageNum < 0) {
+#if defined(PD_I64_MODULE)
+			// i64: one pass per host frame (the module's coroutine goes back to i64 here)
+			pdmainHostYield();
+			if (g_PdQuitRequested) {
+				continue;
+			}
+#endif
 			if (pdnetOnlinePoll()) {
 				mainChangeToStage(STAGE_TITLE); // connected from the menus: both games restart together
 				break;

@@ -101,7 +101,12 @@ static void cleanup(void)
 	// TODO: actually shut down all subsystems
 }
 
-#ifdef PD_IOS
+#if defined(PD_I64_MODULE)
+/* i64 module (port/src/i64_module.c): the same start-up, on the module's coroutine */
+int pdModuleMain(int argc, const char **argv)
+{
+	sysInitArgs(argc, argv);
+#elif defined(PD_IOS)
 int main(int argc, char *argv[]) // SDL_main's signature
 {
 	sysInitArgs(argc, (const char **)argv);
@@ -131,7 +136,9 @@ int main(int argc, const char **argv)
 		modConfigLoad(MOD_CONFIG_FNAME);
 	}
 
-	atexit(cleanup);
+#if !defined(PD_I64_MODULE)
+	atexit(cleanup);   /* the module calls pdModuleShutdown at stop instead */
+#endif
 
 	bootCreateSched();
 
@@ -205,3 +212,24 @@ PD_CONSTRUCTOR static void gameConfigInit(void)
 		configRegisterInt(strFmt("Game.Player%d.UseKeyReloads", i), &g_PlayerExtCfg[j].usereloads, 0, false);
 	}
 }
+
+#if defined(PD_I64_MODULE)
+/* i64 module stop (host stack; the game coroutine is parked between passes of
+ * the main loop): save, then release everything the run made. The caller then
+ * restores the globals. */
+extern void audioShutdown(void);
+extern void inputShutdown(void);
+extern void gfx_sdl_teardown_external(void);
+extern void gfx_metal_release_all(void);
+extern void sysMemFreeTracked(void);
+void pdModuleShutdown(void)
+{
+	cleanup();
+	audioShutdown();
+	inputShutdown();
+	gfx_metal_release_all();
+	gfx_sdl_teardown_external();
+	sysMemFreeTracked();   /* the memp heap, the ROM image and every other sysMem allocation */
+	sysLogPrintf(LOG_NOTE, "module: stopped");
+}
+#endif

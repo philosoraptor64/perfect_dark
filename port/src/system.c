@@ -222,6 +222,18 @@ void sysFatalError(const char *fmt, ...)
 	fflush(stdout);
 	fflush(stderr);
 
+#if defined(PD_I64_MODULE)
+	/* inside i64: never end the app; the run stops (n64_game_frame returns
+	 * EXIT) and the coroutine stays parked here until i64 stops the module */
+	{
+		extern volatile int g_PdQuitRequested;
+		extern void pdmainHostYield(void);
+		g_PdQuitRequested = 1;
+		alreadyCrashed = 0;
+		for (;;) pdmainHostYield();
+	}
+#endif
+
 	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Fatal error", errmsg, NULL);
 
 	exit(1);
@@ -291,6 +303,53 @@ void sysGetHomePath(char *outPath, const u32 outLen)
 	SDL_free(sdlPath);
 }
 
+#if defined(PD_I64_MODULE)
+/* i64 module: the game's sysMem blocks come from a malloc zone of their own,
+ * destroyed as a whole at stop (sysMemFreeTracked); the globals that pointed
+ * into it are reset right after. A plain free() of such a block (videoShutdown
+ * frees vidModes so) still works: Darwin's free() finds the owning zone. */
+#include <malloc/malloc.h>
+static malloc_zone_t *s_MemZone = NULL;
+
+static malloc_zone_t *memZone(void)
+{
+	if (!s_MemZone) {
+		s_MemZone = malloc_create_zone(0, 0);
+		malloc_set_zone_name(s_MemZone, "pd-game");
+	}
+	return s_MemZone;
+}
+
+void *sysMemAlloc(const u32 size)
+{
+	return malloc_zone_malloc(memZone(), size);
+}
+
+void *sysMemZeroAlloc(const u32 size)
+{
+	return malloc_zone_calloc(memZone(), 1, size);
+}
+
+void *sysMemRealloc(void *ptr, const u32 newSize)
+{
+	if (!ptr) return sysMemAlloc(newSize);
+	if (malloc_zone_from_ptr(ptr) != s_MemZone) return realloc(ptr, newSize);
+	return malloc_zone_realloc(s_MemZone, ptr, newSize);
+}
+
+void sysMemFree(void *ptr)
+{
+	free(ptr);
+}
+
+void sysMemFreeTracked(void)
+{
+	if (s_MemZone) {
+		malloc_destroy_zone(s_MemZone);
+		s_MemZone = NULL;
+	}
+}
+#else
 void *sysMemAlloc(const u32 size)
 {
 	return malloc(size);
@@ -310,6 +369,7 @@ void sysMemFree(void *ptr)
 {
 	free(ptr);
 }
+#endif
 
 void sysSleep(const s64 hns)
 {

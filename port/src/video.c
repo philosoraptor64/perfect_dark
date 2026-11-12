@@ -89,6 +89,8 @@ s32 videoInit(void)
 #ifdef PD_IOS
 	vidRenderer = 1; // iOS has no desktop OpenGL: always Metal
 #endif
+	extern void *g_gfxExternalWindow;   /* i64 module: the host's window is a Metal window */
+	if (g_gfxExternalWindow) vidRenderer = 1;
 	gfx_sdl_use_metal = (vidRenderer == 1);
 	if (gfx_sdl_use_metal) {
 		renderingAPI = &gfx_metal_api;
