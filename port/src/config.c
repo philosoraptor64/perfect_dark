@@ -311,7 +311,7 @@ void configKeepValues(void)
 		total += settings[i].type == CFG_STR ? settings[i].max_str + 1 : 4;
 	}
 	free(keptValues);
-	keptValues = malloc(total ? total : 1);
+	keptValues = sysMemAlloc(total ? total : 1);   /* game allocator: freed with the run (i64) */
 	u8 *p = keptValues;
 	for (s32 i = 0; i < numSettings; ++i) {
 		const size_t n = settings[i].type == CFG_STR ? settings[i].max_str + 1 : 4;

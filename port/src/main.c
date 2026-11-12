@@ -221,12 +221,14 @@ extern void audioShutdown(void);
 extern void inputShutdown(void);
 extern void gfx_sdl_teardown_external(void);
 extern void gfx_metal_release_all(void);
+extern void gfx_destroy(void);
 extern void sysMemFreeTracked(void);
 void pdModuleShutdown(void)
 {
 	cleanup();
 	audioShutdown();
 	inputShutdown();
+	gfx_destroy();   /* the renderer's caches and its texture upload buffer */
 	gfx_metal_release_all();
 	gfx_sdl_teardown_external();
 	sysMemFreeTracked();   /* the memp heap, the ROM image and every other sysMem allocation */

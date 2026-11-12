@@ -171,7 +171,7 @@ void snapshotInit(s32 numslots)
 {
 	findSections();
 	free(s_Slots);
-	s_Slots = calloc((size_t)numslots, sizeof(*s_Slots));
+	s_Slots = sysMemZeroAlloc((u32)((size_t)numslots * sizeof(*s_Slots)));   /* game allocator: freed with the run (i64) */
 	s_NumSlots = numslots;
 	s_Ready = s_Data.base || s_Bss.base;
 	sysLogPrintf(LOG_NOTE, "snapshot: %d slots, globals %zu + %zu bytes", numslots, s_Data.size, s_Bss.size);
@@ -201,7 +201,7 @@ static void saveInto(struct snapslot *s)
 	if (total > s->cap) {
 		free(s->buf);
 		s->cap = total + total / 4;
-		s->buf = malloc(s->cap);
+		s->buf = sysMemAlloc((u32)s->cap);
 		if (!s->buf) {
 			sysFatalError("snapshot: out of memory (%zu bytes)", s->cap);
 		}

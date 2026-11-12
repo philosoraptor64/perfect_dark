@@ -626,7 +626,7 @@ static s32 connectPeer(const char *server, const char *room, const char *passwor
 		// both machines must start from the same save: the guest plays on the host's image (never writing it)
 		s_SaveSize = osEepromImageSize();
 		free(s_SaveImage);
-		s_SaveImage = calloc(1, s_SaveSize);
+		s_SaveImage = sysMemZeroAlloc(s_SaveSize);
 		const u32 chunks = (s_SaveSize + PDNET_SAVE_CHUNK - 1) / PDNET_SAVE_CHUNK;
 		if (s_IsHost) {
 			osEepromGetImage(s_SaveImage); // served to the guest from pollSocket
@@ -833,7 +833,7 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 		port = atoi(s);
 	}
 	if (s_SimLatencyMs || s_SimJitterMs || s_SimLossPct) {
-		s_SimQueue = calloc(SIM_QUEUE, sizeof(*s_SimQueue));
+		s_SimQueue = sysMemZeroAlloc((u32)(SIM_QUEUE * sizeof(*s_SimQueue)));
 		s_SimRand ^= (u32)port;
 		sysLogPrintf(LOG_NOTE, "netplay: simulating %u ms + %u ms jitter, %u%% loss on sent packets", s_SimLatencyMs,
 			s_SimJitterMs, s_SimLossPct);
@@ -1497,14 +1497,14 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 		/* the host's save travels over the channel instead (PDSK chunks, as in the
 		 * boot-time connection): the host serves it from pollSocket */
 		s_SaveSize = osEepromImageSize();
-		s_SaveImage = calloc(1, s_SaveSize);
+		s_SaveImage = sysMemZeroAlloc(s_SaveSize);
 		s_SaveChunksHave = 0;
 		if (s_IsHost) {
 			osEepromGetImage(s_SaveImage);
 		}
 	} else {
 		s_SaveSize = h->eepromsize;
-		s_SaveImage = malloc(s_SaveSize);
+		s_SaveImage = sysMemAlloc(s_SaveSize);
 		memcpy(s_SaveImage, (const u8 *)x->blob + sizeof(*h), s_SaveSize);
 	}
 
