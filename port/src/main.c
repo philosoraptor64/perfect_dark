@@ -22,6 +22,7 @@
 #include "pdnet.h"
 #include "utils.h"
 #include "replaycheck.h"
+void vmprobeRunIfRequested(void);
 
 u32 g_OsMemSize = 0;
 s32 g_OsMemSizeMb = 16;
@@ -166,6 +167,7 @@ int main(int argc, const char **argv)
 		sysLogPrintf(LOG_NOTE, "player profile set to %d", g_FileAutoSelect);
 	}
 
+	vmprobeRunIfRequested(); // PD_VMPROBE=1: GoldenEye address-space probe, quits
 	replayInit();
 
 	mainProc();
