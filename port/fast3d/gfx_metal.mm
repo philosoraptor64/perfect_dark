@@ -11,6 +11,12 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <map>
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include <set>
+#include <tuple>
+#include <string>
 #include <unordered_map>
 #include <algorithm>
 #include <cstring>
@@ -117,6 +123,28 @@ float sZNear = 0.0f, sZFar = 1.0f;
 int sTargetFb; // framebuffer the current pass draws to (0 = screen)
 id<MTLRenderPipelineState> sCopyPipeline; // scaled framebuffer copies
 id<MTLSamplerState> sLinearClampSampler;
+
+// Shader warm-up (no compile stutter): every combiner shader and pipeline variant the game has
+// used is listed in $S/pd.shaders (plus a built-in list from long test runs, pd_shaders_default.inc).
+// A background thread compiles them all as soon as the renderer starts; the game then takes
+// ready-made shaders/pipelines from the warm cache instead of compiling mid-frame. Anything never
+// seen before still compiles on the spot (and is added to the list for next time).
+typedef std::tuple<uint64_t, uint32_t, bool> WarmShaderKey;            // id0, id1, three-point
+typedef std::tuple<uint64_t, uint32_t, bool, uint32_t> WarmPipeKey;   // + variant bits
+struct WarmShader {
+    id<MTLFunction> vfn;
+    id<MTLFunction> ffn;
+    size_t num_floats;
+};
+std::mutex sWarmMutex;
+std::map<WarmShaderKey, WarmShader> sWarmShaders;
+std::map<WarmPipeKey, id<MTLRenderPipelineState>> sWarmPipes;
+std::set<WarmShaderKey> sListShaders;   // what the list file holds (written once each)
+std::set<WarmPipeKey> sListPipes;
+std::string sListPath;
+std::thread sWarmThread;
+std::atomic<bool> sWarmStop{ false };
+std::atomic<int> sWarmShadersDone{ 0 }, sWarmPipesDone{ 0 };
 int sVp[4], sSc[4];
 int sShadersFailed;
 int sAnisotropy = 1;
@@ -145,17 +173,21 @@ void gfx_metal_load_shader(ShaderProgram* new_prg) {
     sCurrentShader = new_prg;
 }
 
-ShaderProgram* gfx_metal_create_and_load_new_shader(uint64_t shader_id0, uint32_t shader_id1) {
-    CCFeatures cc;
-    gfx_cc_get_features(shader_id0, shader_id1, &cc);
-    ShaderProgram& prg = sShaders[{ shader_id0, shader_id1 }];
-    prg.shader_id0 = shader_id0;
-    prg.shader_id1 = shader_id1;
-    prg.num_inputs = cc.num_inputs;
-    prg.used_textures[0] = cc.used_textures[0];
-    prg.used_textures[1] = cc.used_textures[1];
-    prg.three_point = (sTextureFilter == FILTER_THREE_POINT);
-    const std::string src = gfx_metal_generate_msl(cc, prg.three_point, &prg.num_floats);
+extern "C" const char* fsFullPath(const char* relPath);   // port/src/fs.c
+/* shaders + pipelines built mid-frame (not from the warm cache); i64_module.c logs them with slow frames */
+extern "C" { int g_MetalSpotCompiles = 0; }
+
+static const char kWarmHeader[] = "pd-shaders v1";
+static const char* const kDefaultShaderList =
+#include "pd_shaders_default.inc"
+    ;
+
+static bool compile_shader_fns(const CCFeatures& cc, bool three_point, WarmShader* out, std::string* err_out) {
+    std::string src = gfx_metal_generate_msl(cc, three_point, &out->num_floats);
+    if (const char* salt = getenv("PD_SHADER_SALT")) {
+        // test aid: new source text = a cold start (no system shader cache), as on a new device
+        src += std::string("\n// salt ") + salt + "\n";
+    }
     @autoreleasepool {
         NSError* err = nil;
         MTLCompileOptions* opts = [MTLCompileOptions new];
@@ -167,16 +199,243 @@ ShaderProgram* gfx_metal_create_and_load_new_shader(uint64_t shader_id0, uint32_
         id<MTLLibrary> lib = [sDevice newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()]
                                                    options:opts
                                                      error:&err];
-        prg.vertex_fn = lib ? [lib newFunctionWithName:@"vertexMain"] : nil;
-        prg.fragment_fn = lib ? [lib newFunctionWithName:@"fragmentMain"] : nil;
-        if (!prg.vertex_fn || !prg.fragment_fn) {
-            if (sShadersFailed++ < 3) {
-                sysLogPrintf(LOG_ERROR, "Metal: shader %016llx/%08x failed to compile:\n%s\n--- source ---\n%s",
-                             (unsigned long long)shader_id0, shader_id1,
-                             err ? err.localizedDescription.UTF8String : "(no error)", src.c_str());
+        out->vfn = lib ? [lib newFunctionWithName:@"vertexMain"] : nil;
+        out->ffn = lib ? [lib newFunctionWithName:@"fragmentMain"] : nil;
+        if ((!out->vfn || !out->ffn) && err_out) {
+            *err_out = std::string(err ? err.localizedDescription.UTF8String : "(no error)") + "\n--- source ---\n" + src;
+        }
+    }
+    return out->vfn && out->ffn;
+}
+
+static uint32_t pipe_variant(NSUInteger samples, bool has_depth, bool alpha, bool modulate) {
+    return ((uint32_t)samples << 3) | ((uint32_t)has_depth << 2) | ((uint32_t)alpha << 1) | (uint32_t)modulate;
+}
+
+static id<MTLRenderPipelineState> build_pipeline(id<MTLFunction> vfn, id<MTLFunction> ffn, uint32_t variant,
+                                                 NSError** err) {
+    const NSUInteger samples = variant >> 3;
+    const bool has_depth = (variant >> 2) & 1, alpha = (variant >> 1) & 1, modulate = variant & 1;
+    MTLRenderPipelineDescriptor* d = [MTLRenderPipelineDescriptor new];
+    d.vertexFunction = vfn;
+    d.fragmentFunction = ffn;
+    d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm; // the layer's and every framebuffer's format
+    d.depthAttachmentPixelFormat = has_depth ? MTLPixelFormatDepth32Float : MTLPixelFormatInvalid;
+    d.rasterSampleCount = samples ? samples : 1;
+    if (alpha) {
+        MTLRenderPipelineColorAttachmentDescriptor* c = d.colorAttachments[0];
+        c.blendingEnabled = YES;
+        if (modulate) { // GL_DST_COLOR, GL_ZERO
+            c.sourceRGBBlendFactor = c.sourceAlphaBlendFactor = MTLBlendFactorDestinationColor;
+            c.destinationRGBBlendFactor = c.destinationAlphaBlendFactor = MTLBlendFactorZero;
+        } else { // GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
+            c.sourceRGBBlendFactor = c.sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+            c.destinationRGBBlendFactor = c.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        }
+    }
+    return [sDevice newRenderPipelineStateWithDescriptor:d error:err];
+}
+
+// list lines: "S id0 id1 tp" (a shader) and "P id0 id1 tp variant" (a pipeline of it)
+static void warm_parse_line(const char* line) {
+    unsigned long long id0;
+    unsigned int id1, tp, var;
+    if (sscanf(line, "P %llx %x %u %x", &id0, &id1, &tp, &var) == 4) {
+        sListPipes.insert(WarmPipeKey((uint64_t)id0, (uint32_t)id1, tp != 0, (uint32_t)var));
+        sListShaders.insert(WarmShaderKey((uint64_t)id0, (uint32_t)id1, tp != 0));
+    } else if (sscanf(line, "S %llx %x %u", &id0, &id1, &tp) == 3) {
+        sListShaders.insert(WarmShaderKey((uint64_t)id0, (uint32_t)id1, tp != 0));
+    }
+}
+
+static void warm_load_lists(void) {
+    sListShaders.clear();
+    sListPipes.clear();
+    for (const char* p = kDefaultShaderList; *p;) {
+        const char* e = strchr(p, '\n');
+        std::string line(p, e ? (size_t)(e - p) : strlen(p));
+        warm_parse_line(line.c_str());
+        p = e ? e + 1 : p + line.size();
+    }
+    const char* path = fsFullPath("$S/pd.shaders");
+    sListPath = path ? path : "";
+    bool header_ok = false;
+    if (FILE* f = sListPath.empty() ? nullptr : fopen(sListPath.c_str(), "r")) {
+        char line[128];
+        if (fgets(line, sizeof line, f) && !strncmp(line, kWarmHeader, strlen(kWarmHeader))) {
+            header_ok = true;
+            while (fgets(line, sizeof line, f)) {
+                warm_parse_line(line);
             }
-        } else if (++sShadersCompiled % 25 == 1) {
-            sysLogPrintf(LOG_NOTE, "Metal: %d shaders compiled, %d failed", sShadersCompiled, sShadersFailed);
+        }
+        fclose(f);
+    }
+    if (!header_ok && !sListPath.empty()) {
+        if (FILE* f = fopen(sListPath.c_str(), "w")) {
+            fprintf(f, "%s\n", kWarmHeader);
+            fclose(f);
+        }
+    }
+}
+
+static void warm_record(const char* line) {
+    if (sListPath.empty()) {
+        return;
+    }
+    if (FILE* f = fopen(sListPath.c_str(), "a")) {
+        fputs(line, f);
+        fclose(f);
+    }
+}
+
+static void warm_record_shader(const WarmShaderKey& k) {
+    std::lock_guard<std::mutex> lock(sWarmMutex);
+    if (!sListShaders.insert(k).second) {
+        return;
+    }
+    char line[96];
+    snprintf(line, sizeof line, "S %016llx %08x %d\n", (unsigned long long)std::get<0>(k), std::get<1>(k),
+             (int)std::get<2>(k));
+    warm_record(line);
+}
+
+static void warm_record_pipe(const WarmPipeKey& k) {
+    std::lock_guard<std::mutex> lock(sWarmMutex);
+    if (!sListPipes.insert(k).second) {
+        return;
+    }
+    char line[96];
+    snprintf(line, sizeof line, "P %016llx %08x %d %x\n", (unsigned long long)std::get<0>(k), std::get<1>(k),
+             (int)std::get<2>(k), std::get<3>(k));
+    warm_record(line);
+}
+
+static void warm_thread_main(std::vector<WarmShaderKey> shaders, std::vector<WarmPipeKey> pipes) {
+    // all cores: the compiles are independent (MTLDevice is thread-safe)
+    const uint64_t t0 = sysGetMicroseconds();
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_apply(shaders.size(), q, ^(size_t i) {
+        const WarmShaderKey& k = shaders[i];
+        if (sWarmStop) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(sWarmMutex);
+            if (sWarmShaders.count(k)) {
+                return;
+            }
+        }
+        CCFeatures cc;
+        gfx_cc_get_features(std::get<0>(k), std::get<1>(k), &cc);
+        WarmShader w{};
+        if (compile_shader_fns(cc, std::get<2>(k), &w, nullptr)) {
+            std::lock_guard<std::mutex> lock(sWarmMutex);
+            if (sWarmShaders.emplace(k, w).second) {
+                sWarmShadersDone++;
+            }
+        }
+    });
+    dispatch_apply(pipes.size(), q, ^(size_t i) {
+        const WarmPipeKey& k = pipes[i];
+        if (sWarmStop) {
+            return;
+        }
+        WarmShader w{};
+        {
+            std::lock_guard<std::mutex> lock(sWarmMutex);
+            if (sWarmPipes.count(k)) {
+                return;
+            }
+            auto it = sWarmShaders.find(WarmShaderKey(std::get<0>(k), std::get<1>(k), std::get<2>(k)));
+            if (it == sWarmShaders.end()) {
+                return;
+            }
+            w = it->second;
+        }
+        @autoreleasepool {
+            NSError* err = nil;
+            id<MTLRenderPipelineState> ps = build_pipeline(w.vfn, w.ffn, std::get<3>(k), &err);
+            if (ps) {
+                std::lock_guard<std::mutex> lock(sWarmMutex);
+                if (sWarmPipes.emplace(k, ps).second) {
+                    sWarmPipesDone++;
+                }
+            }
+        }
+    });
+    sysLogPrintf(LOG_NOTE, "Metal: warm-up done: %d shaders, %d pipelines in %.0f ms", (int)sWarmShadersDone,
+                 (int)sWarmPipesDone, (double)(sysGetMicroseconds() - t0) / 1000.0);
+}
+
+static void warm_start(void) {
+    if (getenv("PD_NOSHADERWARM")) {
+        return;
+    }
+    warm_load_lists();
+    std::vector<WarmShaderKey> shaders(sListShaders.begin(), sListShaders.end());
+    std::vector<WarmPipeKey> pipes(sListPipes.begin(), sListPipes.end());
+    sWarmStop = false;
+    sWarmShadersDone = 0;
+    sWarmPipesDone = 0;
+    sysLogPrintf(LOG_NOTE, "Metal: warming %d shaders, %d pipelines in the background", (int)shaders.size(),
+                 (int)pipes.size());
+    sWarmThread = std::thread(warm_thread_main, std::move(shaders), std::move(pipes));
+}
+
+static void warm_stop(void) {
+    sWarmStop = true;
+    if (sWarmThread.joinable()) {
+        sWarmThread.join();
+    }
+}
+
+ShaderProgram* gfx_metal_create_and_load_new_shader(uint64_t shader_id0, uint32_t shader_id1) {
+    CCFeatures cc;
+    gfx_cc_get_features(shader_id0, shader_id1, &cc);
+    ShaderProgram& prg = sShaders[{ shader_id0, shader_id1 }];
+    prg.shader_id0 = shader_id0;
+    prg.shader_id1 = shader_id1;
+    prg.num_inputs = cc.num_inputs;
+    prg.used_textures[0] = cc.used_textures[0];
+    prg.used_textures[1] = cc.used_textures[1];
+    prg.three_point = (sTextureFilter == FILTER_THREE_POINT);
+    const WarmShaderKey wk(shader_id0, shader_id1, prg.three_point);
+    bool warm = false;
+    {
+        std::lock_guard<std::mutex> lock(sWarmMutex);
+        auto it = sWarmShaders.find(wk);
+        if (it != sWarmShaders.end()) {
+            prg.vertex_fn = it->second.vfn;
+            prg.fragment_fn = it->second.ffn;
+            prg.num_floats = it->second.num_floats;
+            warm = true;
+        }
+    }
+    if (!warm) {
+        WarmShader w{};
+        std::string err;
+        if (compile_shader_fns(cc, prg.three_point, &w, &err)) {
+            prg.vertex_fn = w.vfn;
+            prg.fragment_fn = w.ffn;
+            prg.num_floats = w.num_floats;
+            {
+                std::lock_guard<std::mutex> lock(sWarmMutex);
+                sWarmShaders.emplace(wk, w);
+            }
+            warm_record_shader(wk);
+            g_MetalSpotCompiles++;
+            if (++sShadersCompiled % 25 == 1) {
+                sysLogPrintf(LOG_NOTE, "Metal: %d shaders compiled on the spot (not warmed), %d failed",
+                             sShadersCompiled, sShadersFailed);
+            }
+        } else {
+            prg.vertex_fn = nil;
+            prg.fragment_fn = nil;
+            prg.num_floats = w.num_floats;
+            if (sShadersFailed++ < 3) {
+                sysLogPrintf(LOG_ERROR, "Metal: shader %016llx/%08x failed to compile:\n%s",
+                             (unsigned long long)shader_id0, shader_id1, err.c_str());
+            }
         }
     }
     sCurrentShader = &prg;
@@ -325,27 +584,28 @@ id<MTLRenderPipelineState> pipeline_for(ShaderProgram* prg) {
                          ((uint64_t)sUseAlpha << 1) | (uint64_t)sModulate;
     __strong id<MTLRenderPipelineState>& ps = sPipelines[key];
     if (!ps) {
-        MTLRenderPipelineDescriptor* d = [MTLRenderPipelineDescriptor new];
-        d.vertexFunction = prg->vertex_fn;
-        d.fragmentFunction = prg->fragment_fn;
-        d.colorAttachments[0].pixelFormat = sLayer.pixelFormat;
-        d.depthAttachmentPixelFormat = has_depth ? MTLPixelFormatDepth32Float : MTLPixelFormatInvalid;
-        d.rasterSampleCount = samples;
-        if (sUseAlpha) {
-            MTLRenderPipelineColorAttachmentDescriptor* c = d.colorAttachments[0];
-            c.blendingEnabled = YES;
-            if (sModulate) { // GL_DST_COLOR, GL_ZERO
-                c.sourceRGBBlendFactor = c.sourceAlphaBlendFactor = MTLBlendFactorDestinationColor;
-                c.destinationRGBBlendFactor = c.destinationAlphaBlendFactor = MTLBlendFactorZero;
-            } else { // GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
-                c.sourceRGBBlendFactor = c.sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
-                c.destinationRGBBlendFactor = c.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        const uint32_t variant = pipe_variant(samples, has_depth, sUseAlpha, sModulate);
+        const WarmPipeKey wk(prg->shader_id0, prg->shader_id1, prg->three_point, variant);
+        {
+            std::lock_guard<std::mutex> lock(sWarmMutex);
+            auto it = sWarmPipes.find(wk);
+            if (it != sWarmPipes.end()) {
+                ps = it->second;
             }
         }
-        NSError* err = nil;
-        ps = [sDevice newRenderPipelineStateWithDescriptor:d error:&err];
         if (!ps) {
-            sysLogPrintf(LOG_ERROR, "Metal: pipeline failed: %s", err.localizedDescription.UTF8String);
+            NSError* err = nil;
+            ps = build_pipeline(prg->vertex_fn, prg->fragment_fn, variant, &err);
+            if (!ps) {
+                sysLogPrintf(LOG_ERROR, "Metal: pipeline failed: %s", err.localizedDescription.UTF8String);
+            } else {
+                {
+                    std::lock_guard<std::mutex> lock(sWarmMutex);
+                    sWarmPipes.emplace(wk, ps);
+                }
+                warm_record_pipe(wk);
+                g_MetalSpotCompiles++;
+            }
         }
     }
     return ps;
@@ -499,6 +759,7 @@ void gfx_metal_init(void) {
         }
     }
     sysLogPrintf(LOG_NOTE, "Metal: device %s", sDevice.name.UTF8String);
+    warm_start();
 
     // Test aid: PD_METAL_SHADERTEST=N compiles N random combiner ids (both filter modes) at start-up.
     if (const char* n = getenv("PD_METAL_SHADERTEST")) {
@@ -867,6 +1128,14 @@ int gfx_metal_get_max_anisotropy_level(void) {
  * still on the GPU and puts the frame semaphore back to its starting count
  * first (libdispatch aborts if a semaphore is freed below it). */
 extern "C" void gfx_metal_release_all(void) {
+    warm_stop();
+    {
+        std::lock_guard<std::mutex> lock(sWarmMutex);
+        sWarmShaders.clear();
+        sWarmPipes.clear();
+        sListShaders.clear();
+        sListPipes.clear();
+    }
     if (!sDevice) {
         return;
     }

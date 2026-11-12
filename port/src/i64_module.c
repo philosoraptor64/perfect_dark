@@ -367,6 +367,11 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 	return 0;
 }
 
+extern int g_MetalSpotCompiles;   /* gfx_metal.mm */
+extern uint64_t sysGetMicroseconds(void);
+extern void sysLogPrintf(int level, const char *fmt, ...);
+PD_KEEP static uint32_t sFrameNo;
+
 N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
 {
 	if (!sRunning || g_PdQuitRequested) return N64_GAME_FRAME_EXIT;
@@ -374,7 +379,16 @@ N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
 		int ev;
 		while ((ev = sHost->net_poll_event()) != 0) pdnetExternalEvent(ev);   /* same numbers */
 	}
+	const int spot0 = g_MetalSpotCompiles;
+	const uint64_t t0 = sysGetMicroseconds();
 	runGame();
+	const uint64_t us = sysGetMicroseconds() - t0;
+	sFrameNo++;
+	if (us > 25000) {
+		/* why a frame was slow: shaders/pipelines built on the spot, else loading or game work */
+		sysLogPrintf(0 /* LOG_NOTE */, "module: slow frame %u: %.1f ms, %d shader/pipeline builds in it",
+			sFrameNo, (double)us / 1000.0, g_MetalSpotCompiles - spot0);
+	}
 	return g_PdQuitRequested ? N64_GAME_FRAME_EXIT : N64_GAME_FRAME_CONTINUE;
 }
 
