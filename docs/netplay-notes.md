@@ -494,3 +494,15 @@ Tested in the Mac i64: ROM import, 3 runs in one process, clean stops, 25 s run 
 - Log: inside i64 `pd.log` goes to the game's data folder (was i64's Documents on iOS; an old Documents/pd.log may
   remain on the 14 Pro).
 - Memory (Mac i64, 5 runs): 38 -> 95 -> 108 -> 115 -> 117 -> 119 MB after each run: levels off at ~+2 MB/run (caches warmed in the first runs; the phone was flat). Not yet seen by eye or played with a controller.
+
+## No shader-compile stutter (2026-11-12)
+Each combiner shader and pipeline variant used to compile mid-frame the first time a scene needed it (cold
+14 Pro, Combat Sim with bots: hitches of 110-170 ms at frames 59, 61, 66, 1201, 1344; the user's own 40 s run:
+12 hitches > 25 ms). Now gfx_metal.mm warms every known shader + pipeline on all cores as soon as the renderer
+starts: the built-in list (port/fast3d/pd_shaders_default.inc: 46 shaders, 47 pipelines recorded over every solo
+stage, every MP arena with 4 bots, title and credits) plus `$S/pd.shaders` (anything new is added as it's used).
+The game takes ready-made ones from the cache; only something never seen compiles on the spot (and is listed).
+Result, cold 14 Pro: no hitches in play (only the level's first frame, during the load: 700 ms; warm-up done in
+~2 s, before a level in normal play). Test aids: `PD_SHADER_SALT=x` (new source = cold compile),
+`PD_NOSHADERWARM=1`; the module logs `slow frame N: X ms, K shader/pipeline builds in it`.
+Regenerate the list: run the stages with an empty data folder and copy pd.shaders (sorted) into the .inc.
