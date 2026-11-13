@@ -1,3 +1,6 @@
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -298,12 +301,27 @@ static inline void osEeepromSave(const char *fname)
 	if (eepromReadOnly) {
 		return;
 	}
-	FILE* fp = fsFileOpenWrite(fname);
-	if (fp) {
-		fwrite(eeprom, 1, EEPROM_SIZE, fp);
-		fsFileFree(fp);
-	} else {
-		sysLogPrintf(LOG_ERROR, "could not save EEPROM to `%s`: %s", fsFullPath(fname), strerror(errno));
+	/* a temporary file that then replaces the save in one step: stopped mid-write (a crash,
+	 * iOS ending the app, i64 stopping the game), the old save stays whole instead of empty */
+	char path[1024], tmp[1100];
+	snprintf(path, sizeof(path), "%s", fsFullPath(fname));
+	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+	FILE *fp = fopen(tmp, "wb");
+	int ok = fp != NULL;
+	if (ok) {
+		ok = fwrite(eeprom, 1, EEPROM_SIZE, fp) == EEPROM_SIZE && fflush(fp) == 0;
+#ifndef _WIN32
+		if (ok) ok = fsync(fileno(fp)) == 0;
+#endif
+		if (fclose(fp) != 0) ok = 0;
+#ifdef _WIN32
+		if (ok) remove(path); /* rename doesn't replace on Windows */
+#endif
+		if (ok) ok = rename(tmp, path) == 0;
+		if (!ok) remove(tmp);
+	}
+	if (!ok) {
+		sysLogPrintf(LOG_ERROR, "could not save EEPROM to `%s`: %s", path, strerror(errno));
 	}
 }
 
