@@ -45,6 +45,12 @@ extern "C" {
 
 #define N64_GAME_ABI_VERSION 1
 
+/* i64's game memory arena (n64_host.arena_*; docs/game-memory-arena.md): in the
+ * free low slot iOS 27 / macOS 27 leave below the system's shared region. A
+ * game with fixed addresses (GoldenEye) packs them into these bounds. */
+#define I64_ARENA_BASE 0x110000000ULL
+#define I64_ARENA_SIZE (576ULL << 20)
+
 #if defined(N64_GAME_BUILDING_MODULE)
 #define N64_GAME_EXPORT __attribute__((visibility("default")))
 #else
@@ -135,13 +141,28 @@ typedef struct n64_host {
 
     void (*log)(const char* fmt, ...) __attribute__((format(printf, 1, 2))); /* [any thread] */
 
-    /* Fixed addresses: i64 reserves a window of address space before main()
-     * (iPhone: 0x3_1000_0000-0x3_A900_0000; macOS: 0x1000_1000_0000-0x1000_A900_0000),
-     * before anything else can grow into it, for modules whose memory must sit at
-     * fixed addresses. Returns 1 if [addr, addr + size) is in it: the module then
-     * owns that range and maps it with VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE (an
-     * atomic replace). NULL in an older i64. [main thread, in start()] */
+    /* The game memory arena (docs/game-memory-arena.md). i64 reserves ONE block
+     * of address space at launch (no memory until used), sized for any single
+     * game: [I64_ARENA_BASE, I64_ARENA_BASE + I64_ARENA_SIZE). The running game
+     * takes its big memory (N64 RAM, rollback/sim heaps, thread stacks, fixed
+     * windows) from it; after the game stops i64 wipes the whole arena, so the
+     * next game gets all of it again. A game must not keep arena memory, or
+     * pointers into it, across stop()/start().
+     *
+     * take_reserved: claim the fixed range [addr, addr + size) (must lie inside
+     * the arena and not overlap anything taken this run). Returns 1 on success:
+     * the module owns it and maps it with VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE
+     * (an atomic replace) or mprotect. NULL in an older i64.
+     * [main thread, in start()] */
     int (*take_reserved)(uint64_t addr, uint64_t size);
+
+    /* arena_reserve: claim size bytes (rounded up to 16 KB) anywhere in the arena,
+     * aligned to align (a power of two, at least 16 KB; 0 = 16 KB). Returns the
+     * address (still reserved, PROT_NONE: mprotect or map it FIXED|OVERWRITE),
+     * or 0 when the arena is full: then fall back to mmap and log it. NULL in an
+     * older i64. [main thread, in start()] */
+    uint64_t (*arena_reserve)(uint64_t size, uint64_t align);
+    uint64_t arena_base, arena_size;   /* 0 when i64 couldn't reserve its arena */
 } n64_host;
 
 /* i64's executable defines the global operator new/delete and forwards them

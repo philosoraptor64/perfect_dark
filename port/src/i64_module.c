@@ -168,6 +168,7 @@ static void restorePristine(void)
 PD_KEEP static const n64_host *sHost;
 PD_KEEP static int sRunning;
 PD_KEEP static uint8_t *sStack;          /* guard page + stack */
+PD_KEEP static int sStackFromArena;       /* 1: from i64's arena, forgotten at stop */
 PD_KEEP static void *sHostSp, *sGameSp;
 PD_KEEP static int sInGame;              /* 1 while the coroutine runs */
 PD_KEEP static void (*sAudioWrite)(const int16_t *, uint32_t, uint32_t);
@@ -352,6 +353,14 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 		ext.hostpaced = 1;
 		g_PdNetExternal = &ext;
 	}
+	if (!sStack && host->arena_reserve) {
+		/* per run from i64's game memory arena (i64 wipes it after the run; see n64_game_stop) */
+		uint64_t a = host->arena_reserve(GUARD_SIZE + GAME_STACK_SIZE, 0);
+		if (a && mprotect((void *)(uintptr_t)(a + GUARD_SIZE), GAME_STACK_SIZE, PROT_READ | PROT_WRITE) == 0) {
+			sStack = (uint8_t *)(uintptr_t)a;   /* the guard below stays PROT_NONE */
+			sStackFromArena = 1;
+		}
+	}
 	if (!sStack) {
 		sStack = mmap(NULL, GUARD_SIZE + GAME_STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 		if (sStack == MAP_FAILED) { sStack = NULL; snprintf(err, err_size, "out of memory"); return 1; }
@@ -408,6 +417,10 @@ N64_GAME_EXPORT void n64_game_stop(void)
 {
 	if (!sRunning) return;
 	pdModuleShutdown();   /* on the host stack: the coroutine is parked at a yield */
+	if (sStackFromArena) {   /* the stack goes back with i64's arena (wiped after stop) */
+		sStack = NULL;
+		sStackFromArena = 0;
+	}
 	restorePristine();
 	sRunning = 0;
 	sHost = NULL;
