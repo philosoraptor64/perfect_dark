@@ -31,6 +31,12 @@ extern "C" {
 #include "gfx_cc.h"
 #include "gfx_rendering_api.h"
 #include "gfx_metal.h"
+#include <vector>
+/* i64 (the module's n64_game_frame raises the request, the callback is n64_host.offer_title_art) */
+extern "C" {
+volatile int gPortFrameCaptureRequest = 0;
+void (*gPortFrameCaptureCallback)(const uint8_t* rgba, uint32_t w, uint32_t h) = nullptr;
+}
 
 extern "C" void* gfx_sdl_get_metal_layer(void);
 
@@ -846,6 +852,29 @@ void gfx_metal_end_frame(void) {
             id<MTLBlitCommandEncoder> blit = [sCmd blitCommandEncoder];
             [blit copyFromTexture:back toTexture:sFrontTex];
             [blit endEncoding];
+            if (gPortFrameCaptureRequest && gPortFrameCaptureCallback && back.pixelFormat == MTLPixelFormatBGRA8Unorm) {
+                /* i64: one picture of the screen for its home screen (finished on Metal's completion thread) */
+                gPortFrameCaptureRequest = 0;
+                const NSUInteger cw = back.width, ch = back.height;
+                id<MTLBuffer> cap = [sDevice newBufferWithLength:cw * ch * 4 options:MTLResourceStorageModeShared];
+                id<MTLBlitCommandEncoder> cb = [sCmd blitCommandEncoder];
+                [cb copyFromTexture:back sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                         sourceSize:MTLSizeMake(cw, ch, 1) toBuffer:cap destinationOffset:0
+                destinationBytesPerRow:cw * 4 destinationBytesPerImage:cw * ch * 4];
+                [cb endEncoding];
+                void (*fn)(const uint8_t*, uint32_t, uint32_t) = gPortFrameCaptureCallback;
+                [sCmd addCompletedHandler:^(id<MTLCommandBuffer>) {
+                    std::vector<uint8_t> rgba(cw * ch * 4);
+                    const uint8_t* src = (const uint8_t*) cap.contents;
+                    for (size_t k = 0; k < (size_t) cw * ch; k++) {
+                        rgba[4 * k + 0] = src[4 * k + 2];
+                        rgba[4 * k + 1] = src[4 * k + 1];
+                        rgba[4 * k + 2] = src[4 * k + 0];
+                        rgba[4 * k + 3] = 255;
+                    }
+                    fn(rgba.data(), (uint32_t) cw, (uint32_t) ch);
+                }];
+            }
             [sCmd presentDrawable:sDrawable];
             dispatch_semaphore_t sem = sFrameSemaphore;
             [sCmd addCompletedHandler:^(id<MTLCommandBuffer>) {

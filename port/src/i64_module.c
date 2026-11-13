@@ -310,6 +310,22 @@ N64_GAME_EXPORT uint32_t n64_game_session_blob(const n64_host *host, void *out, 
 	return 0;   /* online runs not yet */
 }
 
+/* i64's home screen: a picture of the game 30 s into each run, then every minute (fast3d/gfx_metal.mm captures it);
+ * tests: I64_TEST_PREVIEW_AT="400,700" */
+extern volatile int gPortFrameCaptureRequest;
+extern void (*gPortFrameCaptureCallback)(const uint8_t *rgba, uint32_t w, uint32_t h);
+static unsigned sPreviewFrames;
+static int previewDue(unsigned f)
+{
+    const char *at = getenv("I64_TEST_PREVIEW_AT");
+    if (at) {
+        for (const char *q = at; q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : NULL)
+            if ((unsigned)atoi(q) == f) return 1;
+        return 0;
+    }
+    return f >= 1800 && (f - 1800) % 3600 == 0;
+}
+
 N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launch, char *err, size_t err_size)
 {
 	if (sRunning) { snprintf(err, err_size, "already running"); return 1; }
@@ -333,6 +349,8 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 	}
 	savePristine();   /* first start: everything so far is static initialisation */
 	sHost = host;
+	sPreviewFrames = 0;
+	gPortFrameCaptureCallback = host->offer_title_art;
 	sAudioWrite = host->audio_write;
 	sAudioBuffered = host->audio_buffered;
 	snprintf(sDataDir, sizeof(sDataDir), "%s", host->data_dir);
@@ -382,9 +400,11 @@ extern uint64_t sysGetMicroseconds(void);
 extern void sysLogPrintf(int level, const char *fmt, ...);
 PD_KEEP static uint32_t sFrameNo;
 
+
 N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
 {
 	if (!sRunning || g_PdQuitRequested) return N64_GAME_FRAME_EXIT;
+	if (previewDue(++sPreviewFrames) && gPortFrameCaptureCallback) gPortFrameCaptureRequest = 1;
 	if (sHost && sHost->net_poll_event) {
 		int ev;
 		while ((ev = sHost->net_poll_event()) != 0) pdnetExternalEvent(ev);   /* same numbers */
@@ -416,6 +436,8 @@ N64_GAME_EXPORT void n64_game_set_paused(int paused)
 N64_GAME_EXPORT void n64_game_stop(void)
 {
 	if (!sRunning) return;
+	gPortFrameCaptureCallback = NULL;
+	gPortFrameCaptureRequest = 0;
 	pdModuleShutdown();   /* on the host stack: the coroutine is parked at a yield */
 	if (sStackFromArena) {   /* the stack goes back with i64's arena (wiped after stop) */
 		sStack = NULL;
