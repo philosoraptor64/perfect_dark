@@ -53,6 +53,8 @@ s32 pdnetRollbackActive(void);
 void pdnetRollbackPoint(void);
 /* once per displayed frame: 1 = skip this frame's game step (time sync, this side is ahead) */
 s32 pdnetTimeSyncSkip(void);
+/* inside a host app: why the match ends (a desync, the friend gone); "" = it doesn't */
+const char *pdnetEndReason(void);
 /* scripted test input (PD_NET_BOT, PD_TEST_BOT) */
 void pdnetBotPad(s32 tick, u32 seed, OSContPad *pad);
 /* puts this machine's own gameplay settings back (the session used both players'; called before pd.ini is

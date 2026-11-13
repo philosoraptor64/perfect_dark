@@ -5,3 +5,4 @@ _n64_game_start
 _n64_game_frame
 _n64_game_set_paused
 _n64_game_stop
+_n64_game_exit_message

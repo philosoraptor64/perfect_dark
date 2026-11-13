@@ -134,6 +134,14 @@ typedef struct n64_host {
     void (*set_alloc_hooks)(const struct n64_alloc_hooks* hooks); /* NULL = back to malloc */
 
     void (*log)(const char* fmt, ...) __attribute__((format(printf, 1, 2))); /* [any thread] */
+
+    /* Fixed addresses: i64 reserves a window of address space before main()
+     * (iPhone: 0x3_1000_0000-0x3_A900_0000; macOS: 0x1000_1000_0000-0x1000_A900_0000),
+     * before anything else can grow into it, for modules whose memory must sit at
+     * fixed addresses. Returns 1 if [addr, addr + size) is in it: the module then
+     * owns that range and maps it with VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE (an
+     * atomic replace). NULL in an older i64. [main thread, in start()] */
+    int (*take_reserved)(uint64_t addr, uint64_t size);
 } n64_host;
 
 /* i64's executable defines the global operator new/delete and forwards them
@@ -227,6 +235,11 @@ N64_GAME_EXPORT int n64_game_pause_ready(void);
  * view/layer it attached, e.g. SDL_Metal_DestroyView, so the next start
  * doesn't stack a second one). */
 N64_GAME_EXPORT void n64_game_stop(void);
+/* Optional. Right after n64_game_frame() returned N64_GAME_FRAME_EXIT: why the
+ * game ended, for the player (e.g. "The games got out of step, so the match
+ * was stopped."). Writes "" when it ended normally (the player quit). i64 shows
+ * it in its menu. */
+N64_GAME_EXPORT void n64_game_exit_message(char* out, size_t cap);
 
 #ifdef __cplusplus
 }

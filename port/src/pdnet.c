@@ -165,6 +165,12 @@ static u32 simRand(void)
 
 /* A host app (i64) owns the connection: datagrams go through its functions (pdnetInitExternal) */
 static int (*s_ExtSend)(const void *data, uint32_t size) = NULL;
+/* inside a host app (i64): why this side ends the match ("" = it doesn't); the module returns EXIT */
+static char s_EndReason[200];
+const char *pdnetEndReason(void)
+{
+	return s_EndReason;
+}
 static int (*s_ExtRecv)(void *buf, uint32_t cap) = NULL;
 static s32 s_ExtPeerAway = 0;
 static s32 s_HostPaced = 0;
@@ -271,6 +277,13 @@ static void goOffline(void)
 	s_WindowOpen = 0;
 	const char *why = s_PeerLeft ? "The other player left the game." : "Lost the connection to the other player.";
 	sysLogPrintf(LOG_WARNING, "netplay: %s Playing on offline.", why);
+	if (s_ExtSend) {   /* in i64: end the match (i64 shows why) instead of a dialog and playing on alone */
+		if (!s_EndReason[0]) {
+			snprintf(s_EndReason, sizeof(s_EndReason), "%s",
+				s_PeerLeft ? "Your friend left the game." : "Lost the connection to your friend, so the match was stopped.");
+		}
+		return;
+	}
 	char msg[256];
 	snprintf(msg, sizeof(msg), "%s\n\nThe online game is over; you can keep playing on your own.%s", why,
 		s_Session && !s_IsHost ? "\nProgress isn't saved (you were playing on the host's save)." : "");
@@ -1034,7 +1047,7 @@ void pdnetEndTick(s32 tick, u64 hash)
 	if (desyncAt == -2) {
 		desyncAt = envStr("PD_NET_TEST_DESYNC") ? atoi(envStr("PD_NET_TEST_DESYNC")) : -1;
 	}
-	if (tick == desyncAt) {
+	if (tick == desyncAt && s_IsHost) {   /* (one side only, or both change alike) */
 		extern u64 g_RngSeed;
 		g_RngSeed ^= 0x9e3779b97f4a7c15ull;
 		sysLogPrintf(LOG_WARNING, "netplay: test desync injected at tick %d", tick);
@@ -1050,6 +1063,10 @@ void pdnetEndTick(s32 tick, u64 hash)
 	if (!s_DesyncReported && n64net_sync_desynced(s_Net, &dtick, &dkind)) {
 		s_DesyncReported = 1;
 		sysLogPrintf(LOG_ERROR, "netplay: DESYNC detected at tick %u", dtick);
+		if (s_ExtSend && !s_EndReason[0]) {
+			snprintf(s_EndReason, sizeof(s_EndReason),
+				"The two games got out of step, so the match was stopped. (Both logs have the details.)");
+		}
 	}
 
 	if (tick % PDNET_STATS_EVERY == 0 && tick > 0) {

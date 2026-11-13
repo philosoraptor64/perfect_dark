@@ -62,6 +62,7 @@ struct pdnetexternal {
 };
 extern struct pdnetexternal *g_PdNetExternal;
 extern void pdnetExternalEvent(int32_t event);
+extern const char *pdnetEndReason(void);
 
 /* pdcoro_arm64.S */
 extern void pdcoro_switch(void **save_sp, void *load_sp);
@@ -389,7 +390,13 @@ N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
 		sysLogPrintf(0 /* LOG_NOTE */, "module: slow frame %u: %.1f ms, %d shader/pipeline builds in it",
 			sFrameNo, (double)us / 1000.0, g_MetalSpotCompiles - spot0);
 	}
+	if (pdnetEndReason()[0]) return N64_GAME_FRAME_EXIT;   /* a desync or the friend gone: i64 shows why */
 	return g_PdQuitRequested ? N64_GAME_FRAME_EXIT : N64_GAME_FRAME_CONTINUE;
+}
+
+N64_GAME_EXPORT void n64_game_exit_message(char *out, size_t cap)
+{
+	snprintf(out, cap, "%s", pdnetEndReason());
 }
 
 N64_GAME_EXPORT void n64_game_set_paused(int paused)
