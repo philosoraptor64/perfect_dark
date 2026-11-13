@@ -467,6 +467,12 @@ static void readEnv(void)
 	if ((s = envStr("PD_NET_SIM_LATENCY"))) s_SimLatencyMs = (u32)atoi(s);
 	if ((s = envStr("PD_NET_SIM_JITTER"))) s_SimJitterMs = (u32)atoi(s);
 	if ((s = envStr("PD_NET_SIM_LOSS"))) s_SimLossPct = (u32)atoi(s);
+	// the queue for the simulated network (every path: inside i64 the old allocation in the stand-alone
+	// connect was never reached, and the first simulated send wrote through a null pointer)
+	if ((s_SimLatencyMs || s_SimJitterMs || s_SimLossPct) && !s_SimQueue) {
+		s_SimQueue = sysMemZeroAlloc((u32)(SIM_QUEUE * sizeof(*s_SimQueue)));
+		s_SimHead = s_SimCount = 0;
+	}
 	s_Rollback = !(envStr("PD_NET_ROLLBACK") && atoi(envStr("PD_NET_ROLLBACK")) == 0) && snapshotSupported();
 	if ((s = envStr("PD_NET_ROLLBACK_WINDOW"))) {
 		s_RollbackWindow = (u32)atoi(s);
@@ -833,8 +839,7 @@ void pdnetInit(u64 seed, s32 stage, s32 bots, float aspect)
 		port = atoi(s);
 	}
 	if (s_SimLatencyMs || s_SimJitterMs || s_SimLossPct) {
-		s_SimQueue = sysMemZeroAlloc((u32)(SIM_QUEUE * sizeof(*s_SimQueue)));
-		s_SimRand ^= (u32)port;
+		s_SimRand ^= (u32)port;   // (queue: readEnv)
 		sysLogPrintf(LOG_NOTE, "netplay: simulating %u ms + %u ms jitter, %u%% loss on sent packets", s_SimLatencyMs,
 			s_SimJitterMs, s_SimLossPct);
 	}
