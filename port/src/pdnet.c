@@ -66,8 +66,20 @@ static u64 s_SessionSeed = 0;
 extern struct extplayerconfig g_PlayerExtCfg[MAX_PLAYERS];
 extern s32 g_MaxExplosions;
 extern s32 g_OsMemSizeMb;
-static struct pdnetsettings s_PeerSettings;
-static s32 s_HavePeerSettings = 0;
+static struct pdnetsettings s_PeerSettings;          // the newest settings packet (stand-alone: the other player's)
+static s32 s_HavePeerSettings = 0;                   // every other machine's players' settings are here
+static struct pdnetsettings s_PlayerSettings[4];     // per player, from that player's machine
+static u32 s_SettingsMask = 0;
+/* Who plays where. Stand-alone: 2 machines, one player each (player = machine). Inside i64 (ABI v2): up to 4
+ * players on up to 4 machines, player p on machine s_MachineOf[p] with that machine's controller s_PadOf[p]. A
+ * machine's own players use its pd.ini sections Player1.. in order. Each machine shows its first player full
+ * screen (VIEWPLAYERCOUNT: every player has the 1-player view everywhere, which the simulation depends on). */
+static s32 s_NumPlayers = 2, s_NumMachines = 2, s_LocalMachine = 0;
+static s32 s_MachineOf[4] = { 0, 1, 2, 3 }, s_PadOf[4] = { 0, 0, 0, 0 };
+static u32 s_LocalMask = 1;
+static s32 s_DropoutMenu = 0;     // i64: the session's host decides drop-outs (3+ machines)
+static u32 s_LeftMachines = 0;    // machines that left, their players not settled yet
+static u64 s_LeftAt = 0;
 static struct extplayerconfig s_LocalExtCfg[MAX_PLAYERS]; // restored before pd.ini is written
 static s32 s_LocalMaxExplosions = 0;
 static s32 s_SettingsApplied = 0;
@@ -92,7 +104,7 @@ static s32 s_AwaySent = 0;
 extern bool gfx_sdl_app_inactive; // gfx_sdl2.cpp: the iOS app is in the background
 
 static s32 s_LastTick = -1;
-static OSContPad s_TickPads[2];
+static OSContPad s_TickPads[4];
 static u64 s_StallUsecs = 0;
 static u32 s_Stalls = 0;
 static s32 s_DesyncReported = 0;
@@ -245,14 +257,24 @@ static void sendSettings(u8 kind)
 	out[4] = kind;
 	u32 len = 8;
 	if (kind == PDNET_SET_DATA) {
-		struct pdnetsettings mine;
-		memset(&mine, 0, sizeof(mine));
-		mine.player = s_LocalExtCfg[0]; // this machine's own player = its Player1 section
-		mine.maxexplosions = s_LocalMaxExplosions;
-		mine.seedlo = (u32)s_SessionSeed;
-		mine.seedhi = (u32)(s_SessionSeed >> 32);
-		memcpy(out + 8, &mine, sizeof(mine));
-		len += sizeof(mine);
+		// one packet per player of this machine: its k-th player = its pd.ini section Player<k+1>
+		s32 k = 0;
+		for (s32 p = 0; p < s_NumPlayers; p++) {
+			if (!(s_LocalMask & (1u << p))) {
+				continue;
+			}
+			struct pdnetsettings mine;
+			memset(&mine, 0, sizeof(mine));
+			mine.player = s_LocalExtCfg[k < MAX_PLAYERS ? k : 0];
+			mine.maxexplosions = s_LocalMaxExplosions;
+			mine.seedlo = (u32)s_SessionSeed;
+			mine.seedhi = (u32)(s_SessionSeed >> 32);
+			out[5] = (u8)p;
+			memcpy(out + 8, &mine, sizeof(mine));
+			netSend(NULL, out, len + sizeof(mine));
+			k++;
+		}
+		return;
 	}
 	netSend(NULL, out, len);
 }
@@ -295,9 +317,12 @@ static void goOffline(void)
 /* offline after a disconnect: this machine's controller drives its own player, the other player stands still */
 static void offlinePads(const OSContPad *local)
 {
-	const s32 me = s_IsHost ? 0 : 1;
-	s_TickPads[me] = *local;
-	memset(&s_TickPads[1 - me], 0, sizeof(s_TickPads[0]));
+	memset(s_TickPads, 0, sizeof(s_TickPads));
+	for (s32 p = 0; p < s_NumPlayers; p++) {
+		if (s_LocalMask & (1u << p)) {
+			s_TickPads[p] = local[p];
+		}
+	}
 }
 
 static s32 pollSocket(void)
@@ -344,8 +369,14 @@ static s32 pollSocket(void)
 			if (buf[4] == PDNET_SET_REQ) {
 				sendSettings(PDNET_SET_DATA);
 			} else if (buf[4] == PDNET_SET_DATA && n >= 8 + (ssize_t)sizeof(struct pdnetsettings)) {
-				memcpy(&s_PeerSettings, buf + 8, sizeof(s_PeerSettings));
-				s_HavePeerSettings = 1;
+				const s32 pl = buf[5];
+				if (pl < s_NumPlayers && !(s_LocalMask & (1u << pl))) {
+					memcpy(&s_PeerSettings, buf + 8, sizeof(s_PeerSettings));
+					s_PlayerSettings[pl] = s_PeerSettings;
+					s_SettingsMask |= 1u << pl;
+					const u32 remote = ((1u << s_NumPlayers) - 1) & ~s_LocalMask;
+					s_HavePeerSettings = (s_SettingsMask & remote) == remote;
+				}
 			}
 			continue;
 		}
@@ -596,6 +627,8 @@ static s32 connectPeer(const char *server, const char *room, const char *passwor
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.num_players = 2;
 	cfg.local_player = s_IsHost ? 0 : 1;
+	s_NumPlayers = 2;
+	s_LocalMask = 1u << cfg.local_player;
 	cfg.session_id = (u32)(hash ^ (hash >> 32));
 	cfg.start_tick = 0;
 	cfg.input_delay = 2;
@@ -717,14 +750,21 @@ static void activate(void)
 		osEepromUseImage(s_SaveImage);
 		sysLogPrintf(LOG_NOTE, "netplay: using the host's save data (%u bytes, not written here)", s_SaveSize);
 	}
-	const struct extplayerconfig *hostcfg = s_IsHost ? &s_LocalExtCfg[0] : &s_PeerSettings.player;
-	const struct extplayerconfig *guestcfg = s_IsHost ? &s_PeerSettings.player : &s_LocalExtCfg[0];
-	g_PlayerExtCfg[0] = *hostcfg;
-	g_PlayerExtCfg[1] = *guestcfg;
-	g_MaxExplosions = s_IsHost ? s_LocalMaxExplosions : s_PeerSettings.maxexplosions;
+	{
+		s32 k = 0;
+		for (s32 p = 0; p < s_NumPlayers && p < MAX_PLAYERS; p++) {
+			if (s_LocalMask & (1u << p)) {
+				g_PlayerExtCfg[p] = s_LocalExtCfg[k < MAX_PLAYERS ? k : 0];
+				k++;
+			} else {
+				g_PlayerExtCfg[p] = s_PlayerSettings[p].player;
+			}
+		}
+	}
+	g_MaxExplosions = s_IsHost ? s_LocalMaxExplosions : s_PlayerSettings[0].maxexplosions;
 	s_SettingsApplied = 1;
-	sysLogPrintf(LOG_NOTE, "netplay: settings: player 1 fov %.0f, player 2 fov %.0f, max explosions %d",
-		g_PlayerExtCfg[0].fovy, g_PlayerExtCfg[1].fovy, g_MaxExplosions);
+	sysLogPrintf(LOG_NOTE, "netplay: settings: %d players, player 1 fov %.0f, player 2 fov %.0f, max explosions %d",
+		s_NumPlayers, g_PlayerExtCfg[0].fovy, g_PlayerExtCfg[1].fovy, g_MaxExplosions);
 
 	if (s_Rollback) {
 		snapshotInit(PDNET_SLOTS);
@@ -733,10 +773,10 @@ static void activate(void)
 	s_Offline = 0;
 	s_LastTick = -1;
 	s_Active = 1;
-	g_NetLocalPlayer = s_IsHost ? 0 : 1;
+	g_NetLocalPlayer = s_LocalMask ? __builtin_ctz(s_LocalMask) : 0;
 	// one full-screen view per machine (PD_NET_VIEW=split = classic split screen on both)
 	g_NetFullViews = !(envStr("PD_NET_VIEW") && strcmp(envStr("PD_NET_VIEW"), "split") == 0);
-	sysLogPrintf(LOG_NOTE, "netplay: connected as player %d (%s, input delay %u)", s_IsHost ? 1 : 2,
+	sysLogPrintf(LOG_NOTE, "netplay: connected as player %d (%s, input delay %u)", g_NetLocalPlayer + 1,
 		s_Rollback ? "rollback" : "lockstep", n64net_input_get_delay(s_Net));
 }
 
@@ -909,13 +949,89 @@ static void fromNet(const n64net_pad *n, OSContPad *pad)
 	pad->errnum = 0;
 }
 
+static void extWait(void);
+
+/* --- Drop-outs (i64, 3+ machines) ---------------------------------------------
+ * A machine leaving doesn't end the match when the session's host can decide (i64's drop-out menu ->
+ * n64_game_dropout -> pdnetRetire): its players stay, idle (nothing pressed) from a tick n64net agrees on
+ * everywhere. Meanwhile the game waits for them, giving each frame back to i64 (which freezes the game while
+ * the host chooses). The host leaving, or nobody to decide, ends the match. */
+static s32 dropoutPending(void)
+{
+	for (s32 m = 1; m < s_NumMachines; m++) {
+		if (!(s_LeftMachines & (1u << m))) {
+			continue;
+		}
+		s32 settled = 1;
+		for (s32 p = 0; p < s_NumPlayers; p++) {
+			uint32_t last, apply, size = 0;
+			if (s_MachineOf[p] == m && !n64net_input_retired(s_Net, p, &last, &apply, NULL, &size)) {
+				settled = 0;
+			}
+		}
+		if (settled) {
+			s_LeftMachines &= ~(1u << m);
+		}
+	}
+	if (s_LeftMachines && nowUsecs() - s_LeftAt > 150000000ull) {
+		sysLogPrintf(LOG_WARNING, "netplay: no drop-out choice for 2.5 min");
+		s_LeftMachines = 0;
+		s_PeerLeft = 1;
+		return 0;
+	}
+	return s_LeftMachines != 0;
+}
+
+void pdnetMachineLeft(s32 m)
+{
+	if (m == 0 || m >= s_NumMachines || s_NumMachines <= 2 || !s_DropoutMenu || !s_Net) {
+		if (!s_PeerLeft) {
+			sysLogPrintf(LOG_NOTE, "netplay: %s left", m == 0 ? "the host" : "a player");
+		}
+		s_PeerLeft = 1;   // the match ends
+		return;
+	}
+	if (!(s_LeftMachines & (1u << m))) {
+		if (!s_LeftMachines) {
+			s_LeftAt = nowUsecs();
+		}
+		s_LeftMachines |= 1u << m;
+		sysLogPrintf(LOG_NOTE, "netplay: machine %d left at tick %d; waiting for the host's choice", m + 1, s_LastTick);
+	}
+}
+
+s32 pdnetRetire(s32 p)
+{
+	if (!s_IsHost || !s_Net || p < 0 || p >= s_NumPlayers || (s_LocalMask & (1u << p))) {
+		return 0;
+	}
+	const uint8_t act[1] = { 3 /* idle */ };
+	uint32_t apply = 0;
+	if (!n64net_input_retire(s_Net, p, act, sizeof(act), &apply)) {
+		return 0;
+	}
+	sysLogPrintf(LOG_NOTE, "netplay: player %d left: idle from tick %u", p + 1, apply);
+	return 1;
+}
+
 static void exchangeTick(s32 tick, const OSContPad *local)
 {
 	if (s_Offline) {
 		offlinePads(local);
 		return;
 	}
-	n64net_input_set_local(s_Net, (u32)tick, toNet(local));
+	if (s_LocalMask & (s_LocalMask - 1)) {
+		n64net_pad lp[N64NET_INPUT_MAX_PLAYERS];
+		memset(lp, 0, sizeof(lp));
+		for (s32 p = 0; p < s_NumPlayers; p++) {
+			if (s_LocalMask & (1u << p)) {
+				lp[p] = toNet(&local[p]);
+			}
+		}
+		n64net_input_set_local_pads(s_Net, (u32)tick, lp);
+	} else {
+		n64net_input_set_local(s_Net, (u32)tick, toNet(&local[g_NetLocalPlayer]));
+	}
 
 	if (!n64net_input_ready(s_Net, (u32)tick)) {
 		const u64 start = nowUsecs();
@@ -925,6 +1041,14 @@ static void exchangeTick(s32 tick, const OSContPad *local)
 			pollSocket();
 			n64net_input_resend(s_Net);
 			const u64 now = nowUsecs();
+			if (s_LeftMachines) {
+				// a machine left: i64 shows the session's host the drop-out choice and freezes the game
+				// meanwhile, between frames: give the frame back (the game goes on from here)
+				if (dropoutPending()) {
+					extWait();
+					continue;
+				}
+			}
 			if (s_PeerLeft || now - lastPeerCheck > 1000000) {
 				lastPeerCheck = now;
 				if (peerGone()) {
@@ -939,7 +1063,7 @@ static void exchangeTick(s32 tick, const OSContPad *local)
 		s_StallUsecs += nowUsecs() - start;
 	}
 
-	for (s32 p = 0; p < 2; p++) {
+	for (s32 p = 0; p < s_NumPlayers; p++) {
 		n64net_pad n;
 		n64net_input_get(s_Net, p, (u32)tick, &n);
 		fromNet(&n, &s_TickPads[p]);
@@ -959,7 +1083,7 @@ static void exchangeTick(s32 tick, const OSContPad *local)
 	if (rec) {
 		fprintf(rec, "%d", tick);
 		for (s32 p = 0; p < 4; p++) {
-			const OSContPad *pp = p < 2 ? &s_TickPads[p] : NULL;
+			const OSContPad *pp = p < s_NumPlayers ? &s_TickPads[p] : NULL;
 			if (pp) {
 				fprintf(rec, " %x %d %d %d %d 0", pp->button, pp->stick_x, pp->stick_y, pp->rstick_x, pp->rstick_y);
 			} else {
@@ -979,7 +1103,7 @@ void pdnetFilterPads(OSContPad *pads, s32 count, s32 tick)
 
 	if (g_RollbackResim) {
 		// resimulation: the ledger's inputs for that tick (confirmed or the newest prediction)
-		for (s32 p = 0; p < 2; p++) {
+		for (s32 p = 0; p < s_NumPlayers; p++) {
 			n64net_pad n;
 			n64net_input_get(s_Net, p, (u32)tick, &n);
 			fromNet(&n, &s_TickPads[p]);
@@ -989,20 +1113,26 @@ void pdnetFilterPads(OSContPad *pads, s32 count, s32 tick)
 	}
 
 	if (!g_RollbackResim && tick != s_LastTick) {
-		// the local player's physical controller is always controller 1
-		OSContPad local = pads[0];
+		// this machine's players: their physical controllers (the first player's is controller 1)
+		OSContPad local[4];
+		memset(local, 0, sizeof(local));
+		for (s32 p = 0; p < s_NumPlayers; p++) {
+			if (s_LocalMask & (1u << p)) {
+				local[p] = pads[s_PadOf[p] & 3];
+			}
+		}
 		if (s_BotSeed) {
-			pdnetBotPad(tick, s_BotSeed, &local);
+			pdnetBotPad(tick, s_BotSeed, &local[g_NetLocalPlayer]);
 		}
 		// ticks in which the game read no pads still get an input (unchanged), so the ledgers stay in step
 		for (s32 t = s_LastTick + 1; t <= tick; t++) {
-			exchangeTick(t, &local);
+			exchangeTick(t, local);
 		}
 		s_LastTick = tick;
 	}
 
 	for (s32 i = 0; i < count; i++) {
-		if (i < 2) {
+		if (i < s_NumPlayers) {
 			pads[i] = s_TickPads[i];
 		} else {
 			memset(&pads[i], 0, sizeof(pads[i]));
@@ -1018,7 +1148,7 @@ void pdnetFilterStatus(OSContStatus *status, s32 count)
 	}
 
 	for (s32 i = 0; i < count; i++) {
-		if (i < 2) {
+		if (i < s_NumPlayers) {
 			status[i].errnum = 0;
 			status[i].type = CONT_ABSOLUTE;
 			status[i].status = CONT_CARD_ON;
@@ -1462,6 +1592,15 @@ u32 pdnetSessionBlob(void *out, u32 cap)
 	return (u32)sizeof(h) + h.eepromsize;
 }
 
+void pdnetExternalEventFrom(s32 event, s32 machine)
+{
+	if (event == PDNET_EXT_PEER_LEFT && s_NumMachines > 2) {
+		pdnetMachineLeft(machine);
+		return;
+	}
+	pdnetExternalEvent(event);
+}
+
 void pdnetExternalEvent(s32 event)
 {
 	switch (event) {
@@ -1503,6 +1642,28 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 	s_ExtRecv = x->recv;
 	s_HostPaced = x->hostpaced;
 	s_IsHost = x->localplayer == 0;
+	s_NumPlayers = 2;
+	s_NumMachines = 2;
+	s_LocalMachine = x->localplayer;
+	s_LocalMask = 1u << (x->localplayer & 1);
+	s_DropoutMenu = 0;
+	s_LeftMachines = 0;
+	if (x->numplayers >= 2 && x->numplayers <= 4 && x->nummachines >= 2 && x->nummachines <= 4) {
+		s_NumPlayers = x->numplayers;
+		s_NumMachines = x->nummachines;
+		s_LocalMachine = x->localmachine;
+		s_IsHost = s_LocalMachine == 0;
+		s_DropoutMenu = x->dropoutmenu;
+		s_LocalMask = 0;
+		for (s32 p = 0; p < s_NumPlayers; p++) {
+			s_MachineOf[p] = x->machineof[p];
+			s_PadOf[p] = x->padof[p];
+			if (s_MachineOf[p] == s_LocalMachine) {
+				s_LocalMask |= 1u << p;
+			}
+		}
+	}
+	g_NetLocalPlayer = s_LocalMask ? __builtin_ctz(s_LocalMask) : 0;
 	s_Session = 1;
 	s_SessionSeed = x->seed;
 	s_ConnError[0] = '\0';
@@ -1535,8 +1696,9 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 
 	n64net_input_config cfg;
 	memset(&cfg, 0, sizeof(cfg));
-	cfg.num_players = 2;
-	cfg.local_player = s_IsHost ? 0 : 1;
+	cfg.num_players = s_NumPlayers;
+	cfg.local_player = g_NetLocalPlayer;
+	cfg.local_mask = s_LocalMask;
 	cfg.session_id = (u32)(x->seed ^ (x->seed >> 32)) ^ 0x50440000u;
 	cfg.input_delay = envStr("PD_NET_DELAY") ? (u32)atoi(envStr("PD_NET_DELAY")) : 2;
 	cfg.rollback_window = 0;
@@ -1548,6 +1710,7 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 
 	// each player's own per-player settings (the game channel is unreliable: ask until answered)
 	s_HavePeerSettings = 0;
+	s_SettingsMask = 0;
 	const u64 deadline = nowUsecs() + (u64)s_WaitSecs * 1000000ull;
 	u64 nextReq = 0;
 	if (noBlob && !s_IsHost) {
@@ -1597,7 +1760,8 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 	replayBeginOnline(x->seed);
 	activate();
 	// the host's game-wide settings: from the blob, else from its settings packet
-	g_MaxExplosions = !noBlob ? h->maxexplosions : (s_IsHost ? s_LocalMaxExplosions : s_PeerSettings.maxexplosions);
-	sysLogPrintf(LOG_NOTE, "netplay: running on the host app's connection (player %d)", s_IsHost ? 1 : 2);
+	g_MaxExplosions = !noBlob ? h->maxexplosions : (s_IsHost ? s_LocalMaxExplosions : s_PlayerSettings[0].maxexplosions);
+	sysLogPrintf(LOG_NOTE, "netplay: running on the host app's connection (player %d of %d, %d machines)",
+		g_NetLocalPlayer + 1, s_NumPlayers, s_NumMachines);
 	return 0;
 }

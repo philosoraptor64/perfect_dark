@@ -59,9 +59,14 @@ struct pdnetexternal {
 	int (*send)(const void *data, uint32_t size);
 	int (*recv)(void *buf, uint32_t cap);
 	int32_t hostpaced;
+	int32_t numplayers, nummachines, localmachine;
+	int32_t machineof[4], padof[4];
+	int32_t dropoutmenu;
 };
 extern struct pdnetexternal *g_PdNetExternal;
 extern void pdnetExternalEvent(int32_t event);
+extern void pdnetExternalEventFrom(int32_t event, int32_t machine);
+extern int32_t pdnetRetire(int32_t player);
 extern const char *pdnetEndReason(void);
 
 /* pdcoro_arm64.S */
@@ -79,9 +84,11 @@ static const n64_game_info kInfo = {
 	kRoms,
 	1,
 	PDNET_BUILD_ID,
-	2,
+	4,   /* Combat Simulator: up to 4 players, online on up to 4 devices */
 	60,
 	0,
+	N64_DROPOUT_CAN_IDLE,   /* 3+ devices: a leaver's player stays, idle */
+	4,
 };
 
 /* ---------------------------------------------------------------- re-entry */
@@ -333,8 +340,9 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 		snprintf(err, err_size, "i64 and this game module disagree on the interface version");
 		return 1;
 	}
-	if (launch->mode == N64_LAUNCH_ONLINE && (!host->net_send || !host->net_recv || launch->local_player > 1)) {
-		snprintf(err, err_size, "online needs i64's game channel and 2 players");
+	if (launch->mode == N64_LAUNCH_ONLINE && (!host->net_send || !host->net_recv || launch->player_count < 2 ||
+			launch->player_count > 4 || launch->num_machines < 2 || launch->num_machines > 4)) {
+		snprintf(err, err_size, "online needs i64's game channel and 2-4 players");
 		return 1;
 	}
 	if (!host->data_dir || !host->data_dir[0]) { snprintf(err, err_size, "missing folders"); return 1; }
@@ -369,6 +377,14 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 		ext.send = host->net_send;
 		ext.recv = host->net_recv;
 		ext.hostpaced = 1;
+		ext.numplayers = (int32_t)launch->player_count;
+		ext.nummachines = (int32_t)launch->num_machines;
+		ext.localmachine = (int32_t)launch->local_machine;
+		for (uint32_t p = 0; p < launch->player_count && p < 4; p++) {
+			ext.machineof[p] = launch->players[p].machine;
+			ext.padof[p] = launch->players[p].pad;
+		}
+		ext.dropoutmenu = (launch->flags & N64_LAUNCH_DROPOUT_MENU) != 0;
 		g_PdNetExternal = &ext;
 	}
 	if (!sStack && host->arena_reserve) {
@@ -405,7 +421,11 @@ N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
 {
 	if (!sRunning || g_PdQuitRequested) return N64_GAME_FRAME_EXIT;
 	if (previewDue(++sPreviewFrames) && gPortFrameCaptureCallback) gPortFrameCaptureRequest = 1;
-	if (sHost && sHost->net_poll_event) {
+	if (sHost && sHost->abi_version >= 2 && sHost->net_poll_event_from) {
+		uint32_t m = 0;
+		int ev;
+		while ((ev = sHost->net_poll_event_from(&m)) != 0) pdnetExternalEventFrom(ev, (int32_t)m);   /* same numbers */
+	} else if (sHost && sHost->net_poll_event) {
 		int ev;
 		while ((ev = sHost->net_poll_event()) != 0) pdnetExternalEvent(ev);   /* same numbers */
 	}
@@ -451,3 +471,12 @@ N64_GAME_EXPORT void n64_game_stop(void)
 }
 
 #endif /* PD_I64_MODULE */
+
+/* The session's host chose what happens to `player` of a device that left (3+ devices): it stays, idle. */
+N64_GAME_EXPORT int n64_game_dropout(uint32_t player, n64_dropout_action action, const uint32_t *sel, uint32_t count)
+{
+	(void)sel;
+	(void)count;
+	if (action != N64_DROPOUT_IDLE) return 1;
+	return pdnetRetire((int32_t)player) ? 0 : 1;
+}

@@ -43,7 +43,11 @@
 extern "C" {
 #endif
 
-#define N64_GAME_ABI_VERSION 1
+/* ABI versions: 1 = two machines; 2 = up to 4 players over up to 4 machines (n64_launch.players[],
+ * n64_host.net_send_to/net_recv_from/net_poll_event_from, drop-out choices). i64 fills every struct's
+ * abi_version with the version it implements; a module reads v2 fields only when that is >= 2, and
+ * an i64 accepts v1 modules (they see a 2-machine session as before). */
+#define N64_GAME_ABI_VERSION 2
 
 /* i64's game memory arena (n64_host.arena_*; docs/game-memory-arena.md): in the
  * free low slot iOS 27 / macOS 27 leave below the system's shared region. A
@@ -71,13 +75,25 @@ typedef struct n64_game_info {
     const n64_game_rom* roms;      /* dumps this module accepts */
     uint32_t rom_count;
     const char* netplay_build_id;  /* simulation fingerprint: peers must match exactly */
-    uint32_t max_players;          /* humans per online session (2 today) */
+    uint32_t max_players;          /* players (controllers) the game supports in one session, 1-4
+                                      (v1 modules: humans per online session, 2) */
     uint32_t target_fps;           /* n64_game_frame() calls per second i64 paces the display
                                       link at (Smash 60; ProMotion screens must not run it at 120) */
     uint32_t flags;                /* N64_GAME_INFO_* */
+    /* v2: */
+    uint32_t dropout_caps;         /* N64_DROPOUT_CAN_*: what i64 may offer when a player drops out
+                                      ("end the game" is always possible) */
+    uint32_t max_machines;         /* devices the game supports online, 2-4 (0 = 2) */
 } n64_game_info;
 
+#define N64_DROPOUT_CAN_CPU    (1u << 0)  /* a CPU takes over the player (n64_game_cpu_options) */
+#define N64_DROPOUT_CAN_REMOVE (1u << 1)  /* the player leaves the match, which goes on */
+#define N64_DROPOUT_CAN_IDLE   (1u << 2)  /* the player stays, with no input */
+#define N64_DROPOUT_CAN_JOIN   (1u << 3)  /* someone arriving later may take over a player a CPU or idle took
+                                             over (n64_game_admit; the newcomer starts with N64_LAUNCH_JOINING) */
+
 #define N64_GAME_INFO_OWN_THREAD (1u << 0) /* see the lifecycle note above */
+#define N64_GAME_INFO_CAN_UNLOCK_ALL (1u << 1) /* the game can start with everything unlocked (N64_LAUNCH_UNLOCK_ALL) */
 
 N64_GAME_EXPORT const n64_game_info* n64_game_get_info(void);
 
@@ -88,6 +104,10 @@ typedef enum n64_net_event {
     N64_NET_PEER_BACK = 2,
     N64_NET_PEER_LEFT = 3,  /* left the game (back to i64's browser) or the session */
 } n64_net_event;
+
+/* v2: the most machines in a session, and the most players (controllers, all machines together) */
+#define N64_MAX_MACHINES 4
+#define N64_MAX_PLAYERS 4
 
 /* Everything a module may use from i64. Function pointers may be called from
  * the main thread; those marked [any thread] also from the module's threads. */
@@ -163,6 +183,14 @@ typedef struct n64_host {
      * older i64. [main thread, in start()] */
     uint64_t (*arena_reserve)(uint64_t size, uint64_t align);
     uint64_t arena_base, arena_size;   /* 0 when i64 couldn't reserve its arena */
+
+    /* v2: sessions of up to 4 machines (machine 0 = the session's host). net_send sends to every other
+     * machine; net_recv returns any machine's datagram. [any thread] */
+    int (*net_send_to)(uint32_t machine, const void* data, uint32_t size);   /* one machine only */
+    int (*net_recv_from)(void* buf, uint32_t cap, uint32_t* machine);       /* like net_recv + who sent it */
+    /* Like net_poll_event, with the machine the event is about (AWAY/BACK/LEFT). */
+    int (*net_poll_event_from)(uint32_t* machine);
+    int (*voice_machine_speaking)(uint32_t machine);  /* that machine's voice is audible now */
 } n64_host;
 
 /* i64's executable defines the global operator new/delete and forwards them
@@ -210,11 +238,39 @@ typedef struct n64_launch {
     uint32_t session_blob_size; /* opaque to i64 (see n64_game_session_blob) */
     const char* peer_name;      /* the other player's name, for "Waiting for ..." (2 players) */
     uint32_t flags;             /* N64_LAUNCH_* */
+
+    /* v2 (offline too: one machine, 1-4 local controllers): */
+    uint32_t num_machines;      /* devices in the session (1 offline); == num_players for v1 */
+    uint32_t local_machine;     /* this device (0 = the session's host); == local_player for v1 */
+    uint32_t player_count;      /* player slots in use, 1-4: players[0..player_count-1] */
+    struct n64_launch_player {
+        uint8_t machine;        /* which device controls this player */
+        uint8_t pad;            /* that device's local controller index (0 = its first) */
+        uint8_t local;          /* 1 if it is this device */
+        uint8_t reserved;
+    } players[N64_MAX_PLAYERS];  /* player number = index; ordered by machine (the host's first, then
+                                    join order), each machine's controllers consecutive */
+    const char* machine_names[N64_MAX_MACHINES];  /* players' chosen names, per machine */
 } n64_launch;
 
 /* i64 drives n64_game_frame() from a display link at target_fps: the module
  * switches off its own frame pacing (sleeping to its frame schedule). */
 #define N64_LAUNCH_HOST_PACED (1u << 0)
+/* v2: i64 shows the session's host the drop-out menu and calls n64_game_dropout when a machine leaves a game
+ * of more than two machines (the others wait for the decision, up to 2 minutes). Without it a module ends the
+ * match on a drop-out, as nobody would decide. */
+#define N64_LAUNCH_DROPOUT_MENU (1u << 1)
+/* v2: this machine joins the game while it runs, in the place of machine local_machine (whose device left;
+ * a CPU or idle player took its players over). The launch is the one everyone started with (seed, session
+ * blob, player table with this machine in that place). The module catches up (n64net_input: config.joining,
+ * fast-forward through the host's input log; no pacing, drawing or sound needed) and its players become
+ * human again at the tick the host announces. */
+#define N64_LAUNCH_JOINING (1u << 2)
+/* everything unlocked (characters, modes, stages, options: what the game would otherwise unlock by playing), from
+ * i64's per-game setting; online the host's choice, the same on every machine. The module makes it part of the
+ * game's starting state and never writes it into the player's save file: an unlocked run keeps a save of its own
+ * (recomp runtime: recomp_save_subfolder "unlocked"), so its progress is kept too. */
+#define N64_LAUNCH_UNLOCK_ALL (1u << 3)
 
 #define N64_GAME_SESSION_BLOB_MAX (64 * 1024)
 
@@ -261,6 +317,50 @@ N64_GAME_EXPORT void n64_game_stop(void);
  * was stopped."). Writes "" when it ended normally (the player quit). i64 shows
  * it in its menu. */
 N64_GAME_EXPORT void n64_game_exit_message(char* out, size_t cap);
+
+/* ---------------------------------------------------------------- drop-outs (v2) */
+
+/* When a machine leaves a running online game, i64 pauses every machine (as for set_paused) and shows
+ * the session's host a menu built from dropout_caps: a CPU takes over (with the options below), the
+ * player is removed, stays idle, or the game ends. Guests see "<host> is deciding...". */
+
+typedef enum n64_dropout_action {
+    N64_DROPOUT_END = 0,     /* end the game for everyone (i64 stops it; no call) */
+    N64_DROPOUT_CPU = 1,
+    N64_DROPOUT_REMOVE = 2,
+    N64_DROPOUT_IDLE = 3,
+} n64_dropout_action;
+
+typedef struct n64_cpu_choice {
+    const char* label;        /* "Difficulty", "Character" */
+    uint32_t count;           /* options, 2-16 */
+    const char* options[16];  /* "Easy", "Normal", "Hard" */
+    uint32_t initial;         /* preselected option */
+} n64_cpu_choice;
+
+typedef struct n64_cpu_options {
+    uint32_t choice_count;    /* 0-3: i64 shows one picker per choice, in this order */
+    n64_cpu_choice choices[3];
+} n64_cpu_options;
+
+/* Optional, with N64_DROPOUT_CAN_CPU: what i64's CPU dialog offers for `player` (e.g. Smash: "Level",
+ * 1-9; MK: "Difficulty"). Returns 1 (out filled) or 0 = this player can't become a CPU now. Called on
+ * the host, on the main thread, while the game is paused. */
+N64_GAME_EXPORT int n64_game_cpu_options(uint32_t player, n64_cpu_options* out);
+
+/* Optional (the host's module only): the host chose `action` for `player` (selection[i] = option of
+ * choice i for N64_DROPOUT_CPU). The module makes the change deterministic: it sends the choice as an
+ * input event (n64net_input_set_event) on its next tick, and every machine applies it when it plays
+ * that tick, after the leaver's last input (the module stops waiting for the leaver at that tick).
+ * Returns 0, or nonzero if it can't (i64 then ends the game). i64 resumes every machine after it. */
+N64_GAME_EXPORT int n64_game_dropout(uint32_t player, n64_dropout_action action, const uint32_t* selection,
+                                     uint32_t selection_count);
+
+/* Optional, with N64_DROPOUT_CAN_JOIN (the module of the machine that started the game): a new device takes
+ * over `machine`'s players (that machine left; they are CPUs or idle now). The new device starts the game
+ * with N64_LAUNCH_JOINING; this module brings it up to date (n64net_input_admit). Returns 0, or nonzero if
+ * it can't now. */
+N64_GAME_EXPORT int n64_game_admit(uint32_t machine);
 
 #ifdef __cplusplus
 }

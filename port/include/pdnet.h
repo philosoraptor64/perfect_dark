@@ -86,6 +86,10 @@ struct pdnetexternal {
 	int (*send)(const void *data, u32 size);  /* game channel: unreliable datagrams */
 	int (*recv)(void *buf, u32 cap);          /* one datagram: size, 0 if none */
 	s32 hostpaced;              /* the host app calls the frames at 60 Hz: no own pacing */
+	/* i64 ABI v2 (0 = 2 players, one per machine): */
+	s32 numplayers, nummachines, localmachine;
+	s32 machineof[4], padof[4]; /* player p: its machine, and that machine's controller */
+	s32 dropoutmenu;            /* the session's host decides drop-outs (pdnetRetire) */
 };
 enum { PDNET_EXT_PEER_AWAY = 1, PDNET_EXT_PEER_BACK = 2, PDNET_EXT_PEER_LEFT = 3 }; /* = n64_net_event */
 /* host of the session, before every run: what the guests adopt (save image, game-wide settings); 0 = too big */
@@ -94,6 +98,8 @@ u32 pdnetSessionBlob(void *out, u32 cap);
 s32 pdnetInitExternal(const struct pdnetexternal *x);
 /* the host app's session events (once per frame) */
 void pdnetExternalEvent(s32 event);
+void pdnetExternalEventFrom(s32 event, s32 machine);   /* v2: which machine (PEER_LEFT: drop-outs) */
+s32 pdnetRetire(s32 player);                           /* the host: player of a machine that left goes idle */
 s32 pdnetHostPaced(void);
 /* tells the other player this machine is quitting (they play on offline) */
 void pdnetShutdown(void);
