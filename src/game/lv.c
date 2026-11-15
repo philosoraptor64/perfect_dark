@@ -99,6 +99,7 @@
 #ifndef PLATFORM_N64
 extern s32 g_NetFullViews;
 extern s32 g_NetLocalPlayer;
+extern u32 g_NetLocalMask;
 #endif
 #ifndef PLATFORM_N64
 #include "video.h"
@@ -1741,7 +1742,8 @@ Gfx *lvRender(Gfx *gdl)
 			// netplay full views: the other player's view was simulated like ours (its side effects happen
 			// on every machine) but only the local player's view is shown
 			// (only when the local player is in this stage: a one-player stage, e.g. the menus, is shown to everyone)
-			if (g_NetFullViews && PLAYERCOUNT() > g_NetLocalPlayer && g_Vars.currentplayernum != g_NetLocalPlayer) {
+			if (g_NetFullViews && PLAYERCOUNT() > g_NetLocalPlayer
+					&& !(g_NetLocalMask & (1u << g_Vars.currentplayernum))) {
 				gdl = savedgdl;
 			}
 #endif

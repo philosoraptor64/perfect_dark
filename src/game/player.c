@@ -2896,10 +2896,17 @@ bool playerHasSharedViewport(void)
 #ifndef PLATFORM_N64
 // Netplay full views (port/src/pdnet.c): every player gets the one-player full-screen viewport and aspect
 // on every machine (so all machines simulate the same views); each machine shows only its own player.
+// With several players on one machine, that machine shows the game's own split for them: each player's view is
+// laid out as its own machine shows it (g_NetViewCount: players on that machine, g_NetViewSlot: its place there),
+// computed from the session table, so every machine still simulates the same views.
 extern s32 g_NetFullViews;
-#define VIEWPLAYERCOUNT() (g_NetFullViews ? 1 : PLAYERCOUNT())
+extern s32 g_NetViewCount[4], g_NetViewSlot[4];
+// (a one-player stage, e.g. the menus, is shown to everyone full screen)
+#define VIEWPLAYERCOUNT() (g_NetFullViews ? (PLAYERCOUNT() > 1 ? g_NetViewCount[g_Vars.currentplayernum & 3] : 1) : PLAYERCOUNT())
+#define VIEWSLOT() (g_NetFullViews && PLAYERCOUNT() > 1 ? g_NetViewSlot[g_Vars.currentplayernum & 3] : g_Vars.currentplayernum)
 #else
 #define VIEWPLAYERCOUNT() PLAYERCOUNT()
+#define VIEWSLOT() g_Vars.currentplayernum
 #endif
 
 s16 playerGetViewportWidth(void)
@@ -2916,7 +2923,7 @@ s16 playerGetViewportWidth(void)
 			// 3/4 players
 			width = g_ViModes[g_ViRes].width / 2;
 
-			if (g_Vars.currentplayernum == 0 || g_Vars.currentplayernum == 2) {
+			if (VIEWSLOT() == 0 || VIEWSLOT() == 2) {
 				width--;
 			}
 		} else if (VIEWPLAYERCOUNT() == 2) {
@@ -2924,7 +2931,7 @@ s16 playerGetViewportWidth(void)
 				// 2 players vsplit
 				width = g_ViModes[g_ViRes].width / 2;
 
-				if (g_Vars.currentplayernum == 0) {
+				if (VIEWSLOT() == 0) {
 					width--;
 				}
 			} else {
@@ -2953,7 +2960,7 @@ s16 playerGetViewportLeft(void)
 	s16 left;
 
 	if (VIEWPLAYERCOUNT() >= 3 && something != 0) {
-		if (g_Vars.currentplayernum == 1 || g_Vars.currentplayernum == 3) {
+		if (VIEWSLOT() == 1 || VIEWSLOT() == 3) {
 			// 3/4 players - right side
 			left = g_ViModes[g_ViRes].width / 2 + g_ViModes[g_ViRes].fbwidth - g_ViModes[g_ViRes].width;
 		} else {
@@ -2962,7 +2969,7 @@ s16 playerGetViewportLeft(void)
 		}
 	} else if (VIEWPLAYERCOUNT() == 2 && something != 0) {
 		if (optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || g_Vars.fourmeg2player) {
-			if (g_Vars.currentplayernum == 1) {
+			if (VIEWSLOT() == 1) {
 				// 2 players vsplit - right side
 				left = (g_ViModes[g_ViRes].width / 2) + g_ViModes[g_ViRes].fbwidth - g_ViModes[g_ViRes].width;
 			} else {
@@ -3003,10 +3010,10 @@ s16 playerGetViewportHeight(void)
 		if (VIEWPLAYERCOUNT() == 2) {
 			if (optionsGetScreenSplit() == SCREENSPLIT_VERTICAL) {
 				height = tmp;
-			} else if (g_Vars.currentplayernum == 0 && IS8MB()) {
+			} else if (VIEWSLOT() == 0 && IS8MB()) {
 				height--;
 			}
-		} else if (g_Vars.currentplayernum == 0 || g_Vars.currentplayernum == 1) {
+		} else if (VIEWSLOT() == 0 || VIEWSLOT() == 1) {
 			height--;
 		}
 	} else {
@@ -3053,12 +3060,12 @@ s16 playerGetViewportTop(void)
 #endif
 		{
 			if (VIEWPLAYERCOUNT() == 2
-					&& g_Vars.currentplayernum == 1
+					&& VIEWSLOT() == 1
 					&& optionsGetScreenSplit() != SCREENSPLIT_VERTICAL
 					&& !g_Vars.fourmeg2player) {
 				// 2 players hsplit - bottom side
 				top = g_ViModes[g_ViRes].fulltop + g_ViModes[g_ViRes].fullheight / 2;
-			} else if (g_Vars.currentplayernum == 2 || g_Vars.currentplayernum == 3) {
+			} else if (VIEWSLOT() == 2 || VIEWSLOT() == 3) {
 				// 3/4 players - bottom side
 				top = g_ViModes[g_ViRes].fulltop + g_ViModes[g_ViRes].fullheight / 2;
 			}

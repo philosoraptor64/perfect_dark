@@ -85,6 +85,9 @@ static s32 s_LocalMaxExplosions = 0;
 static s32 s_SettingsApplied = 0;
 s32 g_NetFullViews = 0;   // see src/game/player.c VIEWPLAYERCOUNT and lv.c
 s32 g_NetLocalPlayer = 0;
+u32 g_NetLocalMask = 1;                           // this machine's players: their views are shown (lv.c)
+s32 g_NetViewCount[4] = { 1, 1, 1, 1 };           // per player: players on its machine (player.c VIEWPLAYERCOUNT)
+s32 g_NetViewSlot[4] = { 0, 0, 0, 0 };            // per player: its place among them (player.c VIEWSLOT)
 static s32 s_IsHost = 0;
 static s32 s_Sock = -1;
 static struct sockaddr_in s_Peer;
@@ -495,6 +498,11 @@ s32 pdnetMatchMode(void)
 	return s_Active && !s_Session;
 }
 
+s32 pdnetNumPlayers(void)
+{
+	return s_NumPlayers;
+}
+
 /* Reads the PD_NET_* settings that don't depend on how the session starts. */
 static void readEnv(void)
 {
@@ -774,6 +782,19 @@ static void activate(void)
 	s_LastTick = -1;
 	s_Active = 1;
 	g_NetLocalPlayer = s_LocalMask ? __builtin_ctz(s_LocalMask) : 0;
+	g_NetLocalMask = s_LocalMask;
+	for (s32 p = 0; p < 4; p++) {   // each player's view as its own machine lays it out (player.c)
+		g_NetViewCount[p] = 1;
+		g_NetViewSlot[p] = 0;
+		if (p < s_NumPlayers) {
+			for (s32 q = 0; q < s_NumPlayers; q++) {
+				if (q != p && s_MachineOf[q] == s_MachineOf[p]) {
+					g_NetViewCount[p]++;
+					if (q < p) g_NetViewSlot[p]++;
+				}
+			}
+		}
+	}
 	// one full-screen view per machine (PD_NET_VIEW=split = classic split screen on both)
 	g_NetFullViews = !(envStr("PD_NET_VIEW") && strcmp(envStr("PD_NET_VIEW"), "split") == 0);
 	sysLogPrintf(LOG_NOTE, "netplay: connected as player %d (%s, input delay %u)", g_NetLocalPlayer + 1,

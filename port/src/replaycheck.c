@@ -226,7 +226,8 @@ void replaySetupMatch(void)
 	}
 
 	g_MpSetup.stagenum = g_StageNum;
-	g_MpSetup.chrslots = pdnetMatchMode() ? 0x3 : 1; // player 1 (+ player 2 online)
+	extern s32 pdnetNumPlayers(void);
+	g_MpSetup.chrslots = pdnetMatchMode() ? (1u << pdnetNumPlayers()) - 1 : 1; // player 1 (+ the others online)
 
 	for (s32 i = 0; i < s_Bots; i++) {
 		g_MpSetup.chrslots |= 1 << (MAX_PLAYERS + i);
