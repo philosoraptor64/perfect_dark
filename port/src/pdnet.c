@@ -79,6 +79,13 @@ static s32 s_MachineOf[4] = { 0, 1, 2, 3 }, s_PadOf[4] = { 0, 0, 0, 0 };
 static u32 s_LocalMask = 1;
 static s32 s_DropoutMenu = 0;     // i64: the session's host decides drop-outs (3+ machines)
 static u32 s_LeftMachines = 0;    // machines that left, their players not settled yet
+/* Joining a running match: this machine takes over a departed machine's players. It adopts every player's
+ * settings as the others have them (its own players' too), and replays the host's input log as fast as it can,
+ * not shown or heard (g_PdCatchUp, i64_module.c), until its players go live (n64net admit / rejoined). */
+static s32 s_Joining = 0, s_Catching = 0;
+static u64 s_CatchStart = 0;
+static int (*s_ExtSendTo)(u32 machine, const void *data, u32 size) = NULL;
+s32 g_PdCatchUp = 0;
 static u64 s_LeftAt = 0;
 static struct extplayerconfig s_LocalExtCfg[MAX_PLAYERS]; // restored before pd.ini is written
 static s32 s_LocalMaxExplosions = 0;
@@ -240,6 +247,16 @@ static void netSend(void *user, const uint8_t *data, uint32_t size)
 	s_SimCount++;
 }
 
+/* n64net's input log for a machine joining mid-game: to that player's machine only */
+static void netSendTo(void *user, int player, const uint8_t *data, uint32_t size)
+{
+	if (s_ExtSendTo && player >= 0 && player < 4) {
+		s_ExtSendTo((u32)s_MachineOf[player], data, size);
+		return;
+	}
+	netSend(user, data, size);
+}
+
 static void sendHandshake(u8 type)
 {
 	u8 buf[16];
@@ -264,6 +281,13 @@ static void sendSettings(u8 kind)
 		s32 k = 0;
 		for (s32 p = 0; p < s_NumPlayers; p++) {
 			if (!(s_LocalMask & (1u << p))) {
+				// the host also passes on what it has for the other players (a machine joining mid-game
+				// takes over a departed player's settings as everyone has them)
+				if (s_IsHost && s_Active && (s_SettingsMask & (1u << p))) {
+					out[5] = (u8)p;
+					memcpy(out + 8, &s_PlayerSettings[p], sizeof(s_PlayerSettings[p]));
+					netSend(NULL, out, len + sizeof(s_PlayerSettings[p]));
+				}
 				continue;
 			}
 			struct pdnetsettings mine;
@@ -373,12 +397,13 @@ static s32 pollSocket(void)
 				sendSettings(PDNET_SET_DATA);
 			} else if (buf[4] == PDNET_SET_DATA && n >= 8 + (ssize_t)sizeof(struct pdnetsettings)) {
 				const s32 pl = buf[5];
-				if (pl < s_NumPlayers && !(s_LocalMask & (1u << pl))) {
+				if (pl < s_NumPlayers && (s_Joining || !(s_LocalMask & (1u << pl))) && !(s_Active && s_Joining)) {
 					memcpy(&s_PeerSettings, buf + 8, sizeof(s_PeerSettings));
 					s_PlayerSettings[pl] = s_PeerSettings;
 					s_SettingsMask |= 1u << pl;
-					const u32 remote = ((1u << s_NumPlayers) - 1) & ~s_LocalMask;
-					s_HavePeerSettings = (s_SettingsMask & remote) == remote;
+					// (a joiner needs every player's, its own included: what the others simulate with)
+					const u32 need = ((1u << s_NumPlayers) - 1) & (s_Joining ? ~0u : ~s_LocalMask);
+					s_HavePeerSettings = (s_SettingsMask & need) == need;
 				}
 			}
 			continue;
@@ -761,7 +786,7 @@ static void activate(void)
 	{
 		s32 k = 0;
 		for (s32 p = 0; p < s_NumPlayers && p < MAX_PLAYERS; p++) {
-			if (s_LocalMask & (1u << p)) {
+			if ((s_LocalMask & (1u << p)) && !s_Joining) {
 				g_PlayerExtCfg[p] = s_LocalExtCfg[k < MAX_PLAYERS ? k : 0];
 				k++;
 			} else {
@@ -1019,6 +1044,46 @@ void pdnetMachineLeft(s32 m)
 		s_LeftMachines |= 1u << m;
 		sysLogPrintf(LOG_NOTE, "netplay: machine %d left at tick %d; waiting for the host's choice", m + 1, s_LastTick);
 	}
+}
+
+s32 pdnetAdmit(s32 m)
+{
+	if (!s_IsHost || !s_Net || m <= 0 || m >= s_NumMachines) {
+		return 0;
+	}
+	u32 mask = 0;
+	for (s32 p = 0; p < s_NumPlayers; p++) {
+		if (s_MachineOf[p] == m) {
+			mask |= 1u << p;
+		}
+	}
+	if (!mask || !n64net_input_admit(s_Net, mask)) {
+		return 0;
+	}
+	s_LeftMachines &= ~(1u << m);
+	sysLogPrintf(LOG_NOTE, "netplay: machine %d joins in the place of players %x: sending it the game so far", m + 1, mask);
+	return 1;
+}
+
+s32 pdnetCatchingUp(void)
+{
+	if (!s_Joining || !s_Net || !s_Active) {
+		return 0;
+	}
+	uint32_t live = UINT32_MAX;
+	const uint32_t have = n64net_input_log_ticks(s_Net, &live);
+	const s32 catching = n64net_input_catching_up(s_Net) || live == UINT32_MAX || (u32)(s_LastTick + 1) < live;
+	if (catching != s_Catching) {
+		s_Catching = catching;
+		if (catching) {
+			s_CatchStart = nowUsecs();
+			sysLogPrintf(LOG_NOTE, "netplay: joining the running match: catching up (%u ticks of the host's log here)", have);
+		} else {
+			sysLogPrintf(LOG_NOTE, "netplay: caught up at tick %d in %.1f s (live from tick %u)", s_LastTick,
+				(nowUsecs() - s_CatchStart) / 1e6, live);
+		}
+	}
+	return catching;
 }
 
 s32 pdnetRetire(s32 p)
@@ -1669,6 +1734,9 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 	s_LocalMask = 1u << (x->localplayer & 1);
 	s_DropoutMenu = 0;
 	s_LeftMachines = 0;
+	s_Joining = x->joining != 0;
+	s_Catching = 0;
+	s_ExtSendTo = x->sendto;
 	if (x->numplayers >= 2 && x->numplayers <= 4 && x->nummachines >= 2 && x->nummachines <= 4) {
 		s_NumPlayers = x->numplayers;
 		s_NumMachines = x->nummachines;
@@ -1725,9 +1793,14 @@ s32 pdnetInitExternal(const struct pdnetexternal *x)
 	cfg.rollback_window = 0;
 	cfg.ticks_per_second = 60;
 	cfg.send = netSend;
+	cfg.send_to = netSendTo;
+	cfg.joining = s_Joining;
 	cfg.log = netLog;
 	s_Net = n64net_input_create(&cfg);
 	n64net_input_set_auto_delay(s_Net, cfg.input_delay, s_Rollback ? 3 : 6);
+	if (s_Joining) {
+		sysLogPrintf(LOG_NOTE, "netplay: joining a running match in the place of machine %d", s_LocalMachine + 1);
+	}
 
 	// each player's own per-player settings (the game channel is unreliable: ask until answered)
 	s_HavePeerSettings = 0;

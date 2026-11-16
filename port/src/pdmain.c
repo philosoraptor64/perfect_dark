@@ -283,6 +283,8 @@ volatile int g_PdQuitRequested = 0;     /* the game or the player asked to quit 
 void pdmainHostYield(void);
 #endif
 
+extern s32 g_PdCatchUp;   // pdnet.c
+
 void mainProc(void)
 {
 	mainInit();
@@ -574,7 +576,8 @@ void mainLoop(void)
 				break;
 			}
 			const s32 cycles = osGetCount() - g_Vars.thisframestartt;
-			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
+			// (netplay: a machine catching up with a running match ticks every pass, as fast as it can)
+			if (g_PdCatchUp || !g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
 				if (pdnetHoldWhileAway()) {
 					detTickDelay(); // restart the schedule when back
 					continue;

@@ -136,9 +136,11 @@ s32 videoInit(void)
 	return 0;
 }
 
+extern s32 g_PdCatchUp;   // pdnet.c: a catch-up frame (joined mid-match) shows nothing
+
 void videoStartFrame(void)
 {
-	if (initDone) {
+	if (initDone && !g_PdCatchUp) {   // (netplay: a machine catching up with a running match shows nothing)
 		startTime = wmAPI->get_time();
 		gfx_start_frame();
 	}
@@ -150,7 +152,7 @@ void videoStartFrame(void)
 
 void videoSubmitCommands(Gfx *cmds)
 {
-	if (initDone) {
+	if (initDone && !g_PdCatchUp) {
 		gfx_run(cmds);
 		++dlcount;
 	}
@@ -158,7 +160,7 @@ void videoSubmitCommands(Gfx *cmds)
 
 void videoEndFrame(void)
 {
-	if (!initDone) {
+	if (!initDone || g_PdCatchUp) {
 		return;
 	}
 

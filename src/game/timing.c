@@ -33,6 +33,7 @@ void frametimeApply(s32 diffframe60, s32 diffframe240, s32 frametime)
 
 #ifndef PLATFORM_N64
 extern s32 g_RollbackResim; // port/src/rollback.c
+extern s32 g_PdCatchUp;     // port/src/pdnet.c
 #endif
 
 void frametimeCalculate(void)
@@ -58,6 +59,7 @@ void frametimeCalculate(void)
 	} while (g_Vars.mininc60 && diffframe60 < g_Vars.mininc60
 #ifndef PLATFORM_N64
 			&& !g_RollbackResim // resimulated ticks don't wait for real time
+			&& !g_PdCatchUp // nor do ticks of a machine catching up with a running match
 #endif
 			);
 

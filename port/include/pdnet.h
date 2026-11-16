@@ -90,6 +90,8 @@ struct pdnetexternal {
 	s32 numplayers, nummachines, localmachine;
 	s32 machineof[4], padof[4]; /* player p: its machine, and that machine's controller */
 	s32 dropoutmenu;            /* the session's host decides drop-outs (pdnetRetire) */
+	s32 joining;                /* this machine joins a running match in a departed machine's place */
+	int (*sendto)(u32 machine, const void *data, u32 size);   /* one machine only (the joiner's log) */
 };
 enum { PDNET_EXT_PEER_AWAY = 1, PDNET_EXT_PEER_BACK = 2, PDNET_EXT_PEER_LEFT = 3 }; /* = n64_net_event */
 /* host of the session, before every run: what the guests adopt (save image, game-wide settings); 0 = too big */
@@ -99,7 +101,10 @@ s32 pdnetInitExternal(const struct pdnetexternal *x);
 /* the host app's session events (once per frame) */
 void pdnetExternalEvent(s32 event);
 void pdnetExternalEventFrom(s32 event, s32 machine);   /* v2: which machine (PEER_LEFT: drop-outs) */
-s32 pdnetRetire(s32 player);                           /* the host: player of a machine that left goes idle */
+s32 pdnetRetire(s32 player);
+s32 pdnetAdmit(s32 machine);       /* the host: a newcomer takes over that machine's players */
+s32 pdnetCatchingUp(void);         /* the joiner is still replaying the host's log (frames not shown) */
+extern s32 g_PdCatchUp;            /* this frame is a catch-up frame (video.c skips the GPU, audio is dropped) */                           /* the host: player of a machine that left goes idle */
 s32 pdnetHostPaced(void);
 /* tells the other player this machine is quitting (they play on offline) */
 void pdnetShutdown(void);

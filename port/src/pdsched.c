@@ -246,6 +246,8 @@ void schedStartFrame(OSSched *sc)
 	}
 }
 
+extern s32 g_PdCatchUp;   // pdnet.c
+
 void schedAudioFrame(OSSched *sc)
 {
 	s32 i;
@@ -253,7 +255,7 @@ void schedAudioFrame(OSSched *sc)
 	if (!g_SndDisabled) {
 		for (i = 0; i < g_Vars.diffframe60; i++) {
 			amgrFrame();
-			if (!g_RollbackResim) {
+			if (!g_RollbackResim && !g_PdCatchUp) {   // (nothing is heard while catching up with a running match)
 				audioEndFrame();
 			}
 		}

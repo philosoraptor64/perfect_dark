@@ -62,7 +62,12 @@ struct pdnetexternal {
 	int32_t numplayers, nummachines, localmachine;
 	int32_t machineof[4], padof[4];
 	int32_t dropoutmenu;
+	int32_t joining;
+	int (*sendto)(uint32_t machine, const void *data, uint32_t size);
 };
+extern int32_t pdnetAdmit(int32_t machine);
+extern int32_t pdnetCatchingUp(void);
+extern int32_t g_PdCatchUp;
 extern struct pdnetexternal *g_PdNetExternal;
 extern void pdnetExternalEvent(int32_t event);
 extern void pdnetExternalEventFrom(int32_t event, int32_t machine);
@@ -87,7 +92,7 @@ static const n64_game_info kInfo = {
 	4,   /* Combat Simulator: up to 4 players, online on up to 4 devices */
 	60,
 	0,
-	N64_DROPOUT_CAN_IDLE,   /* 3+ devices: a leaver's player stays, idle */
+	N64_DROPOUT_CAN_IDLE | N64_DROPOUT_CAN_JOIN,   /* 3+ devices: a leaver's player stays, idle; someone may join later */
 	4,
 };
 
@@ -225,6 +230,7 @@ static void runGame(void)
 
 static void hostAudioWrite(const short *stereo, unsigned frames, unsigned rate)
 {
+	if (g_PdCatchUp) return;   /* catching up with a running match: nothing is heard */
 	if (sAudioWrite) sAudioWrite((const int16_t *)stereo, frames, rate);
 }
 static unsigned hostAudioBuffered(unsigned rate)
@@ -385,6 +391,8 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 			ext.padof[p] = launch->players[p].pad;
 		}
 		ext.dropoutmenu = (launch->flags & N64_LAUNCH_DROPOUT_MENU) != 0;
+		ext.joining = (launch->flags & N64_LAUNCH_JOINING) != 0;
+		ext.sendto = host->net_send_to;
 		g_PdNetExternal = &ext;
 	}
 	if (!sStack && host->arena_reserve) {
@@ -431,7 +439,25 @@ N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
 	}
 	const int spot0 = g_MetalSpotCompiles;
 	const uint64_t t0 = sysGetMicroseconds();
-	runGame();
+	if (pdnetCatchingUp()) {
+		/* joined mid-game: replay the host's log, not shown or heard, as many passes as fit in ~14 ms */
+		g_PdCatchUp = 1;
+		static uint32_t sCatchFrames = 0, sCatchPasses = 0;
+		uint32_t passes = 0;
+		do {
+			runGame();
+			passes++;
+		} while (!g_PdQuitRequested && pdnetCatchingUp() && sysGetMicroseconds() - t0 < 14000);
+		g_PdCatchUp = 0;
+		sCatchPasses += passes;
+		if (++sCatchFrames % 60 == 0) {
+			sysLogPrintf(0, "module: catching up: %u passes in the last 60 host frames (last frame %u in %.1f ms)",
+				sCatchPasses, passes, (double)(sysGetMicroseconds() - t0) / 1000.0);
+			sCatchPasses = 0;
+		}
+	} else {
+		runGame();
+	}
 	const uint64_t us = sysGetMicroseconds() - t0;
 	sFrameNo++;
 	if (us > 25000) {
@@ -479,4 +505,10 @@ N64_GAME_EXPORT int n64_game_dropout(uint32_t player, n64_dropout_action action,
 	(void)count;
 	if (action != N64_DROPOUT_IDLE) return 1;
 	return pdnetRetire((int32_t)player) ? 0 : 1;
+}
+
+/* The session's host: a newcomer takes over the players of `machine` (a device that left; idle since). */
+N64_GAME_EXPORT int n64_game_admit(uint32_t machine)
+{
+	return pdnetAdmit((int32_t)machine) ? 0 : 1;
 }
