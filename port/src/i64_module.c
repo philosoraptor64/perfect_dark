@@ -178,6 +178,21 @@ static void restorePristine(void)
 #define GAME_STACK_SIZE (16u << 20)
 #define GUARD_SIZE (64u << 10)
 PD_KEEP static const n64_host *sHost;
+
+// i64's controllers (n64_host.pad_read; i64 docs/controllers.md): pad k of this device -> port k, in place of the
+// port's own SDL reading (libultra.c osContGetReadData). Online, pdnet takes this device's pads from those ports.
+extern int (*g_PdHostPadRead)(int32_t port, uint16_t *button, int8_t *stick_x, int8_t *stick_y);
+static int hostPadRead(int32_t port, uint16_t *button, int8_t *stick_x, int8_t *stick_y)
+{
+	n64_pad_state st = {0};
+	if (!sHost || !sHost->pad_read || port < 0 || !sHost->pad_read((uint32_t)port, &st)) {
+		return 0;
+	}
+	*button = st.buttons;
+	*stick_x = st.stick_x;
+	*stick_y = st.stick_y;
+	return 1;
+}
 PD_KEEP static int sRunning;
 PD_KEEP static uint8_t *sStack;          /* guard page + stack */
 PD_KEEP static int sStackFromArena;       /* 1: from i64's arena, forgotten at stop */
@@ -363,6 +378,7 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 	}
 	savePristine();   /* first start: everything so far is static initialisation */
 	sHost = host;
+	g_PdHostPadRead = (host->abi_version >= 2 && host->pad_read) ? hostPadRead : NULL;
 	sPreviewFrames = 0;
 	gPortFrameCaptureCallback = host->offer_title_art;
 	sAudioWrite = host->audio_write;
@@ -491,6 +507,7 @@ N64_GAME_EXPORT void n64_game_stop(void)
 	}
 	restorePristine();
 	sRunning = 0;
+	g_PdHostPadRead = NULL;
 	sHost = NULL;
 	sAudioWrite = NULL;
 	sAudioBuffered = NULL;

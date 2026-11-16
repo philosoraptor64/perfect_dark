@@ -195,6 +195,10 @@ s32 osContStartReadData(OSMesgQueue *mesgq)
 	return 0;
 }
 
+// i64 (the launcher) owns the controllers: each port's buttons and stick come from it (one mapping for every
+// game: i64 docs/controllers.md; set by the i64 module). Returns 0 for a port without a controller.
+int (*g_PdHostPadRead)(s32 port, u16 *button, s8 *stick_x, s8 *stick_y) = NULL;
+
 void osContGetReadData(OSContPad *pad)
 {
 	OSContPad *first = pad;
@@ -209,6 +213,19 @@ void osContGetReadData(OSContPad *pad)
 			pad->errnum = CONT_NO_RESPONSE_ERROR;
 		} else {
 			pad->errnum = 0;
+		}
+		if (g_PdHostPadRead) {
+			u16 b = 0;
+			s8 x = 0, y = 0;
+			if (!g_PdHostPadRead(i, &b, &x, &y)) {
+				b = 0;
+				x = y = 0;
+			}
+			pad->button = b;
+			pad->stick_x = x;
+			pad->stick_y = y;
+			pad->rstick_x = 0;   // i64's mapping: the right stick is the C buttons
+			pad->rstick_y = 0;
 		}
 	}
 

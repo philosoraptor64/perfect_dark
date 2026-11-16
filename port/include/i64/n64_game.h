@@ -111,6 +111,27 @@ typedef enum n64_net_event {
 
 /* Everything a module may use from i64. Function pointers may be called from
  * the main thread; those marked [any thread] also from the module's threads. */
+/* One N64 controller's state (n64_host.pad_read): the button bits of the N64's OSContPad. */
+typedef struct n64_pad_state {
+    uint16_t buttons;   /* N64_PAD_* */
+    int8_t stick_x;     /* -80..80 (left/right) */
+    int8_t stick_y;     /* -80..80 (down/up) */
+} n64_pad_state;
+#define N64_PAD_A 0x8000
+#define N64_PAD_B 0x4000
+#define N64_PAD_Z 0x2000
+#define N64_PAD_START 0x1000
+#define N64_PAD_DU 0x0800
+#define N64_PAD_DD 0x0400
+#define N64_PAD_DL 0x0200
+#define N64_PAD_DR 0x0100
+#define N64_PAD_L 0x0020
+#define N64_PAD_R 0x0010
+#define N64_PAD_CU 0x0008
+#define N64_PAD_CD 0x0004
+#define N64_PAD_CL 0x0002
+#define N64_PAD_CR 0x0001
+
 typedef struct n64_host {
     uint32_t abi_version;
 
@@ -191,7 +212,20 @@ typedef struct n64_host {
     /* Like net_poll_event, with the machine the event is about (AWAY/BACK/LEFT). */
     int (*net_poll_event_from)(uint32_t* machine);
     int (*voice_machine_speaking)(uint32_t machine);  /* that machine's voice is audible now */
+
+    /* v2, added 2026-11-16 (i64 and its modules ship together; check the pointer before use): i64's own
+     * controllers, the same for every game (docs/controllers.md). Pad k = this device's k-th controller, the
+     * numbering n64_launch.players[].pad uses. One mapping and deadzone for all games:
+     *   A -> A, B and X -> B, LT -> Z, LB -> L, RB and RT -> R, Start/Menu -> Start, D-pad -> D-pad,
+     *   right stick -> C buttons, left stick -> stick in N64 units (about +-80 at full tilt, deadzone 12%).
+     * On a Mac without a controller, the keyboard is pad 0 (arrows = stick, X A, C B, Z Z, Enter Start, Q L,
+     * E R, I/J/K/L C buttons, T/F/G/H D-pad). [main thread or the game thread] */
+    uint32_t (*pad_count)(void);                                   /* this device's controllers now */
+    int (*pad_read)(uint32_t pad, struct n64_pad_state* out);      /* 1, or 0 if there is no such pad */
+    void (*pad_rumble)(uint32_t pad, float strength);              /* 0..1; 0 = off */
 } n64_host;
+
+
 
 /* i64's executable defines the global operator new/delete and forwards them
  * here. Mario Kart's rollback keeps its C++ simulation objects in its own
