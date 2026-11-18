@@ -179,6 +179,16 @@ void snapshotInit(s32 numslots)
 
 static void saveInto(struct snapslot *s);
 
+void snapshotSwap(s32 a, s32 b)
+{
+	if (!s_Slots || a < 0 || b < 0 || a >= s_NumSlots || b >= s_NumSlots) {
+		return;
+	}
+	struct snapslot t = s_Slots[a];
+	s_Slots[a] = s_Slots[b];
+	s_Slots[b] = t;
+}
+
 void snapshotSave(s32 slot)
 {
 	if (!s_Ready || slot < 0) {
@@ -331,6 +341,7 @@ s32 snapshotLoadBoot(void) { return 0; }
 void snapshotInit(s32 numslots) { (void)numslots; }
 void snapshotSave(s32 slot) { (void)slot; }
 s32 snapshotLoad(s32 slot) { (void)slot; return 0; }
+void snapshotSwap(s32 a, s32 b) { (void)a; (void)b; }
 size_t snapshotLastSize(s32 slot) { (void)slot; return 0; }
 s32 snapshotCompare(s32 a, s32 b, char *r, size_t n) { (void)a; (void)b; if (n) r[0] = 0; return 0; }
 f64 snapshotLastSaveMs(void) { return 0; }

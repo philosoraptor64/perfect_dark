@@ -15,6 +15,7 @@ s32 snapshotSupported(void);
 void snapshotInit(s32 numslots);
 void snapshotSave(s32 slot);
 s32 snapshotLoad(s32 slot); /* 0 if the slot was never saved */
+void snapshotSwap(s32 a, s32 b); /* exchange two slots (pointers only): the rollback driver's anchor */
 size_t snapshotLastSize(s32 slot);
 /* byte comparison of two slots (SyncTest diagnostics): number of ranges that differ, details in report */
 s32 snapshotCompare(s32 slota, s32 slotb, char *report, size_t reportlen);

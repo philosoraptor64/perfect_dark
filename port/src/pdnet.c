@@ -123,7 +123,11 @@ static s32 s_DesyncReported = 0;
 #define PDNET_SLOTS 16
 #define PDNET_HASH_RING 64
 static s32 s_Rollback = 0;
-static u32 s_RollbackWindow = 8;
+// 40 ticks (2/3 s): a network spike is guessed through and corrected afterwards instead of waited out, so the
+// game and its music keep going (i64 todo item 3: the music sequencer is part of the simulation, the AI reads
+// it, so it can only keep its tempo if the game keeps running). Normal play rolls back only as far as inputs
+// are late; the rollback driver's anchor snapshot (snapshotSwap) covers depths beyond the 16-slot ring.
+static u32 s_RollbackWindow = 40;
 static s32 s_RollbackFrom = 60;     // ticks before this run in lockstep (match start)
 static s32 s_WindowOpen = 0;
 static u64 s_TickHash[PDNET_HASH_RING]; // state hash before tick t (refreshed by every resimulation)
@@ -800,7 +804,7 @@ static void activate(void)
 		s_NumPlayers, g_PlayerExtCfg[0].fovy, g_PlayerExtCfg[1].fovy, g_MaxExplosions);
 
 	if (s_Rollback) {
-		snapshotInit(PDNET_SLOTS);
+		snapshotInit(PDNET_SLOTS + 1);   // + the anchor (slot PDNET_SLOTS)
 		rollbackEnableRoomCache(); // before the stage loads its rooms
 	}
 	s_Offline = 0;
@@ -1299,22 +1303,48 @@ void pdnetEndTick(s32 tick, u64 hash)
 
 /* --- Rollback ------------------------------------------------------------- */
 
+extern s32 g_MainChangeToStageNum;   // pdmain.c: a stage change is pending
+// The pending stage change is port code (pdmain.c), outside the snapshot segment, but it is simulation state: a
+// late title/menu input that started a stage change on a wrong guess must be undone by the rollback. Kept per slot.
+static s32 s_SlotChange[PDNET_SLOTS + 1];
+
 static void cbSave(void *user, uint32_t slot)
 {
 	(void)user;
 	snapshotSave((s32)slot);
+	if (slot < PDNET_SLOTS + 1) s_SlotChange[slot] = g_MainChangeToStageNum;
 }
 
 static void cbLoad(void *user, uint32_t slot)
 {
 	(void)user;
 	snapshotLoad((s32)slot);
+	if (slot < PDNET_SLOTS + 1) g_MainChangeToStageNum = s_SlotChange[slot];
 	replaySetTick((s32)n64net_rollback_callback_tick(s_Net)); // the state before that tick
+}
+
+static void cbSwap(void *user, uint32_t a, uint32_t b)
+{
+	(void)user;
+	snapshotSwap((s32)a, (s32)b);
+	if (a < PDNET_SLOTS + 1 && b < PDNET_SLOTS + 1) {
+		const s32 t = s_SlotChange[a];
+		s_SlotChange[a] = s_SlotChange[b];
+		s_SlotChange[b] = t;
+	}
 }
 
 static void cbAdvance(void *user)
 {
 	(void)user;
+	// A replayed tick asked for a stage change (a late title/menu input): in a live run the main loop ends the
+	// stage right after that tick and loads the next one. So the replay stops here: the rest of it would run
+	// empty ticks (mainTick does nothing while a change is pending, but the tick count and the audio frame
+	// advance), and this machine would load the stage later than the others. The main loop now loads it at the
+	// same tick; the ticks after it are played again on the new stage, from confirmed inputs (the window closes).
+	if (g_MainChangeToStageNum >= 0) {
+		return;
+	}
 	rollbackStep();
 	const s32 t = replayGetTick();
 	s_TickHash[t % PDNET_HASH_RING] = replayStateHash();
@@ -1384,6 +1414,7 @@ void pdnetRollbackPoint(void)
 	cb.load = cbLoad;
 	cb.advance = cbAdvance;
 	cb.slot_count = PDNET_SLOTS;
+	cb.swap = cbSwap;
 
 	g_RollbackResim = 1;
 	const int depth = n64net_rollback_frame(s_Net, (uint32_t)tick, &cb);
