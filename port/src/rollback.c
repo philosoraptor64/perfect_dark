@@ -20,6 +20,7 @@ void schedStartFrame(OSSched *sc);
 void schedEndFrame(OSSched *sc);
 void mainTick(void);
 extern s32 g_MainChangeToStageNum;
+extern s32 g_StageNum;
 
 #define HASH_RING 64
 
@@ -91,8 +92,14 @@ static void syncTestPoint(void)
 		fflush(stdout);
 	}
 
+	// never rewind across a stage load (memp is reset there): count from the tick each stage started
+	static s32 lastStage = -1, stageStart = 0;
+	if (g_StageNum != lastStage) {
+		lastStage = g_StageNum;
+		stageStart = tick;
+	}
 	const s32 from = tick - s_SyncTest;
-	if (from < s_SyncTestFrom || g_MainChangeToStageNum >= 0) {
+	if (from < s_SyncTestFrom || from < stageStart + 1 || g_MainChangeToStageNum >= 0) {
 		return;
 	}
 

@@ -1326,7 +1326,8 @@ extern s32 g_MainChangeToStageNum;
 static s32 s_LastStage = -1;
 static s32 s_StageStartTick = 0;
 
-/* Rollback can't span a stage load (memp is reset): the window is open only inside a gameplay stage, from
+/* Rollback can't span a stage load (memp is reset): the window is open inside any stage, the title and menus
+ * included (owner's item 10: no lockstep menus; SyncTest from boot through the menus: 0 mismatches), from
  * s_RollbackFrom ticks after it started; when a stage change is requested every prediction is settled first. */
 static s32 rollbackWanted(s32 tick)
 {
@@ -1336,9 +1337,6 @@ static s32 rollbackWanted(s32 tick)
 	}
 	if (g_MainChangeToStageNum >= 0) {
 		return 0;
-	}
-	if (g_StageNum >= STAGE_TITLE) {
-		return 0; // title, menus
 	}
 	return tick >= s_StageStartTick + s_RollbackFrom;
 }

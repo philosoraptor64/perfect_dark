@@ -513,8 +513,6 @@ N64_GAME_EXPORT void n64_game_stop(void)
 	sAudioBuffered = NULL;
 }
 
-#endif /* PD_I64_MODULE */
-
 /* The session's host chose what happens to `player` of a device that left (3+ devices): it stays, idle. */
 N64_GAME_EXPORT int n64_game_dropout(uint32_t player, n64_dropout_action action, const uint32_t *sel, uint32_t count)
 {
@@ -529,3 +527,5 @@ N64_GAME_EXPORT int n64_game_admit(uint32_t machine)
 {
 	return pdnetAdmit((int32_t)machine) ? 0 : 1;
 }
+
+#endif /* PD_I64_MODULE */

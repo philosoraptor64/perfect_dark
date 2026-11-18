@@ -175,8 +175,10 @@ the player by tick 2400; seed 2 diverges). **Duo == Mac: 2430 ticks identical** 
   machines (lv.c only drops other players' views when the local player exists). pdnetMatchMode() = the old direct
   2-player match (numplayers/chrslots forcing) only outside sessions. Pair test `SESSION=1 [HOST_SAVE=<eeprom>]`:
   3000 ticks of both bots wandering the menus IN SYNC (100 checks), both windows show the same menu.
-  **Rollback in sessions (2026-11-11):** pdnetRollbackPoint gates the window: open only in a gameplay stage
-  (g_StageNum < STAGE_TITLE) from PD_NET_ROLLBACK_FROM ticks after it started; when a stage change is pending
+  **Rollback in sessions (2026-11-11; menus too since 2026-11-18):** pdnetRollbackPoint gates the window: open in
+  every stage, the title/file select (0x5a) included (was: only g_StageNum < STAGE_TITLE; SyncTest from boot with
+  PD_TEST_BOT through the title and CI: 0 mismatches in 3941 checks; session pair at 40+20 ms/3%: IN SYNC 100
+  checks),  from PD_NET_ROLLBACK_FROM ticks after it started; when a stage change is pending
   it waits for every input up to tick - 1 to be confirmed, lets n64net correct, then closes the window (the
   change happens in lockstep; a correction that cancels the change just reopens next frame). Same gate in direct
   match mode. Session over 40+20 jitter+3% loss: IN SYNC 80 checks, 47-77 rollbacks inside the Carrington
