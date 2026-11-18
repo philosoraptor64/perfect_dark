@@ -111,7 +111,7 @@ static s32 s_Offline = 0;
 static s32 s_PeerLeft = 0;
 static s32 s_DropSecs = 20;
 static s32 s_AwaySent = 0;
-extern bool gfx_sdl_app_inactive; // gfx_sdl2.cpp: the iOS app is in the background
+extern _Bool gfx_sdl_app_inactive; // a C++ bool (1 byte) in gfx_sdl2.cpp: the iOS app is in the background
 
 static s32 s_LastTick = -1;
 static OSContPad s_TickPads[4];

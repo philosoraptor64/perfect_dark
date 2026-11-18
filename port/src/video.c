@@ -37,7 +37,7 @@ static s32 vidFramebuffers = true;
 // 0 = OpenGL, 1 = Metal (Apple only; work in progress, see docs/netplay-notes.md)
 static s32 vidRenderer = 0;
 #ifdef __APPLE__
-extern bool gfx_sdl_use_metal;
+extern _Bool gfx_sdl_use_metal;   /* a C++ bool (1 byte) in gfx_sdl2.cpp; this file's bool is 4 bytes */
 #endif
 static s32 vidFullscreen = DEFAULT_VID_FULLSCREEN;
 static s32 vidFullscreenExclusive = DEFAULT_VID_FULLSCREEN_EXCLUSIVE;

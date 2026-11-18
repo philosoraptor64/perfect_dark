@@ -17,6 +17,9 @@ bool gfx_sdl_use_metal = false;
 // iOS: true between SDL_APP_WILLENTERBACKGROUND and SDL_APP_DIDENTERFOREGROUND; the Metal backend
 // draws nothing meanwhile (GPU work in the background fails and left other ports at ~1 fps after returning).
 extern "C" bool gfx_sdl_app_inactive = false;
+// i64 out of view (n64_game_set_hidden): the game runs on, the Metal backend draws nothing (as while inactive),
+// but netplay doesn't hold the others: the game keeps going.
+extern "C" bool gfx_sdl_run_hidden = false;
 static SDL_MetalView metal_view;
 extern "C" void* gfx_sdl_get_metal_layer(void) {
     return metal_view ? SDL_Metal_GetLayer(metal_view) : nullptr;

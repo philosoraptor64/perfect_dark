@@ -28,6 +28,7 @@
 #include "i64/n64_game.h"
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -441,10 +442,12 @@ extern void sysLogPrintf(int level, const char *fmt, ...);
 PD_KEEP static uint32_t sFrameNo;
 
 
+extern _Bool gfx_sdl_run_hidden;   /* a C++ bool (1 byte) in gfx_sdl2.cpp: i64 out of view (n64_game_set_hidden below) */
+
 N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
 {
 	if (!sRunning || g_PdQuitRequested) return N64_GAME_FRAME_EXIT;
-	if (previewDue(++sPreviewFrames) && gPortFrameCaptureCallback) gPortFrameCaptureRequest = 1;
+	if (!gfx_sdl_run_hidden && previewDue(++sPreviewFrames) && gPortFrameCaptureCallback) gPortFrameCaptureRequest = 1;
 	if (sHost && sHost->abi_version >= 2 && sHost->net_poll_event_from) {
 		uint32_t m = 0;
 		int ev;
@@ -490,6 +493,14 @@ N64_GAME_EXPORT void n64_game_exit_message(char *out, size_t cap)
 	snprintf(out, cap, "%s", pdnetEndReason());
 }
 
+/* i64 out of view (iOS background) = 1, back = 0: the game keeps running (i64 goes on calling frame()); the
+ * Metal backend draws nothing meanwhile, and netplay doesn't hold the others. */
+N64_GAME_EXPORT void n64_game_set_hidden(int hidden)
+{
+    gfx_sdl_run_hidden = hidden != 0;
+    sysLogPrintf(0, hidden ? "module: out of view, running without drawing" : "module: back in view");
+}
+
 N64_GAME_EXPORT void n64_game_set_paused(int paused)
 {
 	(void)paused;   /* the game only runs when i64 calls frame(): it waits by itself */
@@ -497,6 +508,7 @@ N64_GAME_EXPORT void n64_game_set_paused(int paused)
 
 N64_GAME_EXPORT void n64_game_stop(void)
 {
+    gfx_sdl_run_hidden = false;
 	if (!sRunning) return;
 	gPortFrameCaptureCallback = NULL;
 	gPortFrameCaptureRequest = 0;
