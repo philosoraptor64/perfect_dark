@@ -339,20 +339,18 @@ N64_GAME_EXPORT uint32_t n64_game_session_blob(const n64_host *host, void *out, 
 	return 0;   /* online runs not yet */
 }
 
-/* i64's home screen: a picture of the game 30 s into each run, then every minute (fast3d/gfx_metal.mm captures it);
- * tests: I64_TEST_PREVIEW_AT="400,700" */
+/* i64's home screen: a picture of the game when i64 asks (fast3d/gfx_metal.mm captures it) */
 extern volatile int gPortFrameCaptureRequest;
 extern void (*gPortFrameCaptureCallback)(const uint8_t *rgba, uint32_t w, uint32_t h);
 static unsigned sPreviewFrames;
-static int previewDue(unsigned f)
-{
-    const char *at = getenv("I64_TEST_PREVIEW_AT");
-    if (at) {
-        for (const char *q = at; q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : NULL)
-            if ((unsigned)atoi(q) == f) return 1;
-        return 0;
-    }
-    return f >= 1800 && (f - 1800) % 3600 == 0;
+/* i64 decides when it wants a home-screen picture (todo item 20: one rule in i64 for every game) */
+static volatile int sPreviewWanted = 0;
+N64_GAME_EXPORT void n64_game_capture_preview(void) { sPreviewWanted = 1; }
+static int previewDue(unsigned f) {
+    (void) f;
+    if (!sPreviewWanted) return 0;
+    sPreviewWanted = 0;
+    return 1;
 }
 
 N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launch, char *err, size_t err_size)
