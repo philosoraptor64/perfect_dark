@@ -1,4 +1,7 @@
 #include <ultra64.h>
+#ifndef PLATFORM_N64
+#include "system.h"
+#endif
 #include "constants.h"
 #include "constants.h"
 #include "game/camdraw.h"
@@ -283,6 +286,14 @@ void gamefileLoadDefaults(struct gamefile *file)
 	}
 
 	gamefileApplyOptions(file);
+#ifndef PLATFORM_N64
+	{
+		extern s32 g_PdForceAllUnlocked;   /* port/src/libultra.c: i64 "everything unlocked" (a new file too) */
+		if (g_PdForceAllUnlocked && file == &g_GameFile) {
+			gamefileUnlockEverything();
+		}
+	}
+#endif
 }
 
 const char var7f1b38e8[] = "MAX_FUDGE_DATA_SIZE>=sizeof(PakFileTypeGameSetup_s)";
@@ -396,6 +407,14 @@ s32 gamefileLoad(s32 device)
 			}
 #endif
 			gamefileApplyOptions(&g_GameFile);
+#ifndef PLATFORM_N64
+			{
+				extern s32 g_PdForceAllUnlocked;   /* port/src/libultra.c: i64 "everything unlocked" */
+				if (g_PdForceAllUnlocked) {
+					gamefileUnlockEverything();
+				}
+			}
+#endif
 
 			return 0;
 		}
@@ -640,6 +659,8 @@ void gamefileUnlockEverything(void)
 	gamefileSetFlag(GAMEFILEFLAG_CI_CAMSPY_DONE);
 	gamefileSetFlag(GAMEFILEFLAG_CI_ECMMINE_DONE);
 	gamefileSetFlag(GAMEFILEFLAG_CI_UPLINK_DONE);
+
+	sysLogPrintf(LOG_NOTE, "gamefile: everything unlocked");
 }
 
 #endif

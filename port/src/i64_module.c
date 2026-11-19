@@ -92,7 +92,7 @@ static const n64_game_info kInfo = {
 	PDNET_BUILD_ID,
 	4,   /* Combat Simulator: up to 4 players, online on up to 4 devices */
 	60,
-	0,
+	N64_GAME_INFO_CAN_UNLOCK_ALL,   /* "everything unlocked": own save file (eeprom-unlocked.bin) */
 	N64_DROPOUT_CAN_IDLE | N64_DROPOUT_CAN_JOIN,   /* 3+ devices: a leaver's player stays, idle; someone may join later */
 	4,
 };
@@ -378,6 +378,11 @@ N64_GAME_EXPORT int n64_game_start(const n64_host *host, const n64_launch *launc
 		}
 	}
 	savePristine();   /* first start: everything so far is static initialisation */
+	{
+		extern int32_t g_PdForceAllUnlocked;   /* libultra.c; reset with the globals after each run */
+		g_PdForceAllUnlocked = (launch->flags & N64_LAUNCH_UNLOCK_ALL) != 0;
+		if (g_PdForceAllUnlocked && host->log) host->log("pd: everything unlocked (save: eeprom-unlocked.bin)");
+	}
 	sHost = host;
 	g_PdHostPadRead = (host->abi_version >= 2 && host->pad_read) ? hostPadRead : NULL;
 	sPreviewFrames = 0;

@@ -35,6 +35,7 @@ static u8 eeprom[EEPROM_SIZE];
 static char eepromPath[FS_MAXPATH + 1];
 static s32 eepromLoaded = 0;
 static s32 eepromReadOnly = 0; // netplay guest: plays on the host's save image, never writes its own file
+s32 g_PdForceAllUnlocked = 0;   // i64 "everything unlocked": its own save file, every game file unlocked at load
 
 /* Time */
 
@@ -294,6 +295,8 @@ static inline void osEepromSetPath(void)
 			// just a filename, look for it in the save dir
 			snprintf(eepromPath, FS_MAXPATH, "$S/%s", extPath);
 		}
+	} else if (g_PdForceAllUnlocked) {
+		strncpy(eepromPath, "$S/eeprom-unlocked.bin", FS_MAXPATH);
 	} else {
 		strncpy(eepromPath, EEPROM_PATH, FS_MAXPATH);
 	}
