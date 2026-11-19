@@ -123,11 +123,14 @@ static s32 s_DesyncReported = 0;
 #define PDNET_SLOTS 16
 #define PDNET_HASH_RING 64
 static s32 s_Rollback = 0;
-// 40 ticks (2/3 s): a network spike is guessed through and corrected afterwards instead of waited out, so the
-// game and its music keep going (i64 todo item 3: the music sequencer is part of the simulation, the AI reads
-// it, so it can only keep its tempo if the game keeps running). Normal play rolls back only as far as inputs
-// are late; the rollback driver's anchor snapshot (snapshotSwap) covers depths beyond the 16-slot ring.
-static u32 s_RollbackWindow = 40;
+// 8 ticks normally, deepening up to 40 (2/3 s) as far as replays fit 10 ms per frame (n64net's deep window): a
+// network spike is guessed through and corrected afterwards instead of waited out, so the game and its music
+// keep going (i64 todo item 3: the music sequencer is part of the simulation, the AI reads it, so it can only
+// keep its tempo if the game keeps running); a slow device gets less depth instead of a crawl. The rollback
+// driver's anchor snapshot (snapshotSwap) covers depths beyond the 16-slot ring.
+static u32 s_RollbackWindow = 8;
+#define PDNET_DEEP_WINDOW 40
+#define PDNET_REPLAY_BUDGET_US 10000
 static s32 s_RollbackFrom = 60;     // ticks before this run in lockstep (match start)
 static s32 s_WindowOpen = 0;
 static u64 s_TickHash[PDNET_HASH_RING]; // state hash before tick t (refreshed by every resimulation)
@@ -1405,6 +1408,7 @@ void pdnetRollbackPoint(void)
 		closing = 1;
 	} else if (!s_WindowOpen && want) {
 		n64net_input_set_window(s_Net, s_RollbackWindow);
+		n64net_input_set_deep_window(s_Net, PDNET_DEEP_WINDOW, PDNET_REPLAY_BUDGET_US);
 		s_WindowOpen = 1;
 	}
 
