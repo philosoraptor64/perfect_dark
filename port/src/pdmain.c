@@ -741,13 +741,18 @@ void func0000e990(void)
 }
 
 /* For i64's n64_game_phase (port/src/i64_module.c): 0 = the title and its menus (STAGE_TITLE), or no player yet;
- * 1 = play in a stage (missions, co-op/counter-op, Combat Simulator, Carrington Institute); *humans = the human
+ * 1 = play in a stage with no menu tree open (missions, co-op/counter-op, Combat Simulator, Carrington Institute); *humans = the human
  * players (g_Vars.players; simulants aren't players). */
 int pdGamePhase(unsigned *humans)
 {
 	extern s32 g_StageNum;
 	const unsigned n = PLAYERCOUNT();
-	if (g_StageNum == 0x5a /* STAGE_TITLE */ || n == 0) {
+	/* the file select, Perfect Menu, Combat Simulator setup and end screens run as menus over a stage: menus too
+	 * (an in-match pause, MENUROOT_MPPAUSE, is still play) */
+	const s32 root = g_MenuData.root;
+	const bool menu = g_MenuData.count > 0 && root != MENUROOT_MPPAUSE && root != MENUROOT_PICKTARGET &&
+			root != MENUROOT_TRAINING;
+	if (g_StageNum == 0x5a /* STAGE_TITLE */ || n == 0 || menu) {
 		*humans = 0;
 		return 0;
 	}
