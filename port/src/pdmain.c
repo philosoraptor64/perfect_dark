@@ -739,3 +739,18 @@ void func0000e990(void)
 	objectivesDisableChecking();
 	mainEndStage();
 }
+
+/* For i64's n64_game_phase (port/src/i64_module.c): 0 = the title and its menus (STAGE_TITLE), or no player yet;
+ * 1 = play in a stage (missions, co-op/counter-op, Combat Simulator, Carrington Institute); *humans = the human
+ * players (g_Vars.players; simulants aren't players). */
+int pdGamePhase(unsigned *humans)
+{
+	extern s32 g_StageNum;
+	const unsigned n = PLAYERCOUNT();
+	if (g_StageNum == 0x5a /* STAGE_TITLE */ || n == 0) {
+		*humans = 0;
+		return 0;
+	}
+	*humans = n;
+	return 1;
+}

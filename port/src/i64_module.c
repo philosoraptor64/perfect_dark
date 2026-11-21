@@ -346,6 +346,15 @@ static unsigned sPreviewFrames;
 /* i64 decides when it wants a home-screen picture (todo item 20: one rule in i64 for every game) */
 static volatile int sPreviewWanted = 0;
 N64_GAME_EXPORT void n64_game_capture_preview(void) { sPreviewWanted = 1; }
+
+/* What the players are doing (i64 logs it; the conformance suite's PvP pass needs MULTI). */
+int pdGamePhase(unsigned *humans);   /* port/src/pdmain.c */
+N64_GAME_EXPORT int n64_game_phase(uint32_t *humans) {
+    unsigned n = 0;
+    const int play = pdGamePhase(&n);
+    if (humans) *humans = n;
+    return !play ? 1 /* N64_PHASE_MENU */ : n >= 2 ? 3 /* N64_PHASE_MULTI */ : 2 /* N64_PHASE_SOLO */;
+}
 static int previewDue(unsigned f) {
     (void) f;
     if (!sPreviewWanted) return 0;
