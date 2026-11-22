@@ -31,7 +31,14 @@ s32 osTvType = OS_TV_NTSC;        /* 0 = PAL, 1 = NTSC, 2 = MPAL */
 s32 osResetType = 0;              /* 0 = cold reset */
 s32 osViClock = VI_NTSC_CLOCK;
 
+/* In the rollback snapshot (port/ files keep normal sections): a save written in a frame that a rollback then
+ * undid stayed in this image on one machine only, and the next save-file read differed (gate 2026-11-22: PD
+ * desync at tick 570 on the cellular profile, in the menus, right after a game-file load). */
+#if defined(__APPLE__) && defined(__clang__)
+static u8 eeprom[EEPROM_SIZE] __attribute__((section("__PDSNAP,__bss")));
+#else
 static u8 eeprom[EEPROM_SIZE];
+#endif
 static char eepromPath[FS_MAXPATH + 1];
 static s32 eepromLoaded = 0;
 static s32 eepromReadOnly = 0; // netplay guest: plays on the host's save image, never writes its own file
