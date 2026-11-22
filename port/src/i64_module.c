@@ -456,10 +456,11 @@ PD_KEEP static uint32_t sFrameNo;
 
 extern _Bool gfx_sdl_run_hidden;   /* a C++ bool (1 byte) in gfx_sdl2.cpp: i64 out of view (n64_game_set_hidden below) */
 
-N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
+/* i64's session events (away/back/left); also from pdnet's waits for the other player, which run inside one
+ * frame: a friend who left (or came back as a new copy) ends a 2-machine match at once, not after the silence
+ * timeout */
+void pdnetHostEventPoll(void)
 {
-	if (!sRunning || g_PdQuitRequested) return N64_GAME_FRAME_EXIT;
-	if (!gfx_sdl_run_hidden && previewDue(++sPreviewFrames) && gPortFrameCaptureCallback) gPortFrameCaptureRequest = 1;
 	if (sHost && sHost->abi_version >= 2 && sHost->net_poll_event_from) {
 		uint32_t m = 0;
 		int ev;
@@ -468,6 +469,13 @@ N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
 		int ev;
 		while ((ev = sHost->net_poll_event()) != 0) pdnetExternalEvent(ev);   /* same numbers */
 	}
+}
+
+N64_GAME_EXPORT n64_frame_result n64_game_frame(void)
+{
+	if (!sRunning || g_PdQuitRequested) return N64_GAME_FRAME_EXIT;
+	if (!gfx_sdl_run_hidden && previewDue(++sPreviewFrames) && gPortFrameCaptureCallback) gPortFrameCaptureRequest = 1;
+	pdnetHostEventPoll();
 	const int spot0 = g_MetalSpotCompiles;
 	const uint64_t t0 = sysGetMicroseconds();
 	if (pdnetCatchingUp()) {

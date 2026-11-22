@@ -313,8 +313,13 @@ static void sendSettings(u8 kind)
 	netSend(NULL, out, len);
 }
 
+void pdnetHostEventPoll(void) __attribute__((weak));   /* i64_module.c (i64 builds only) */
+
 static s32 peerGone(void)
 {
+	if (pdnetHostEventPoll) {
+		pdnetHostEventPoll();
+	}
 	if (s_PeerLeft) {
 		return 1;
 	}
