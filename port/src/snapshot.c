@@ -15,6 +15,8 @@
 
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
+#include <unistd.h>
+#include "n64net_reloc.h"
 
 struct memorypool {
 	u8 *start;
@@ -268,6 +270,117 @@ static s32 loadFrom(struct snapslot *s)
 	return 1;
 }
 
+/* ---- resync (getting back in step after a desync): the state in a form another device can load ----
+ * (n64net_reloc.h). The globals and the whole memp heap go over; pointers into this image, the memp heap
+ * (allocated per device) and i64's game memory arena (one fixed address everywhere) go as offsets. Other heap
+ * pointers (room buffers, file data) are this device's own: the guest keeps its own, or the one it has for the
+ * same host pointer. The graphics buffers are per device (render output). */
+#define PD_I64_ARENA_BASE 0x110000000ULL   /* i64's n64_game.h: I64_ARENA_BASE, I64_ARENA_SIZE */
+#define PD_I64_ARENA_SIZE (576ULL << 20)
+extern s32 g_MainChangeToStageNum;
+extern u8 *g_RomFile;   /* romdata.c */
+extern u32 g_RomFileSize;   /* pdmain.c (port code, outside the segment): a stage change is pending */
+static n64net_reloc s_Reloc;
+
+static s32 resyncSpans(n64net_reloc_span *sp)
+{
+	if (!s_Data.base && !s_Bss.base) {
+		findSections();
+	}
+	if (!g_MempHeap || !g_MempHeapSize) {
+		return 0;
+	}
+	n64net_reloc_free(&s_Reloc);
+	if (!n64net_reloc_init(&s_Reloc, &__dso_handle)) {
+		return 0;
+	}
+	n64net_reloc_add(&s_Reloc, (const void *)(uintptr_t)PD_I64_ARENA_BASE, (size_t)PD_I64_ARENA_SIZE);
+	n64net_reloc_add(&s_Reloc, g_MempHeap, g_MempHeapSize);
+	if (g_RomFile && g_RomFileSize) {   /* the ROM image (per device): sample data and bank pointers point into it */
+		n64net_reloc_add(&s_Reloc, g_RomFile, g_RomFileSize);
+	}
+	s_Reloc.align4 = 2;   /* packed structs: pointers 2, 4 or 6 bytes into a word (models, converted sound banks) */
+	for (s32 i = 0; i < 2; i++) {
+		u8 *a = i ? g_VtxBuffers[0] : g_GfxBuffers[0], *b = i ? g_VtxBuffers[SNAP_NUM_GFXTASKS] : g_GfxBuffers[SNAP_NUM_GFXTASKS];
+		if (a && b > a) {
+			n64net_reloc_keep(&s_Reloc, a, (size_t)(b - a));
+		}
+	}
+	s32 n = 0;
+	if (s_Data.size) { sp[n].base = s_Data.base; sp[n].used = sp[n].cap = s_Data.size; n++; }
+	if (s_Bss.size) { sp[n].base = s_Bss.base; sp[n].used = sp[n].cap = s_Bss.size; n++; }
+	sp[n].base = g_MempHeap; sp[n].used = sp[n].cap = g_MempHeapSize; n++;
+	sp[n].base = &g_MainChangeToStageNum; sp[n].used = sp[n].cap = sizeof(g_MainChangeToStageNum); n++;
+	return n;
+}
+
+size_t snapshotResyncSize(void)
+{
+	n64net_reloc_span sp[8];
+	const s32 n = resyncSpans(sp);
+	return n ? n64net_reloc_state_size_r(&s_Reloc, sp, n) : 0;
+}
+
+void snapshotResyncSave(u8 *out)
+{
+	n64net_reloc_span sp[8];
+	n64net_reloc_stats st;
+	const s32 n = resyncSpans(sp);
+	if (!n) {
+		return;
+	}
+	n64net_reloc_scan(&s_Reloc);
+	n64net_reloc_save(&s_Reloc, sp, n, out, &st);
+	sysLogPrintf(LOG_NOTE, "resync state: %d ranges, %llu words in regions, %llu elsewhere, %llu split", n,
+		(unsigned long long)st.region_ptrs, (unsigned long long)st.foreign, (unsigned long long)st.split);
+	if (getenv("PD_NET_RELOC_DUMP")) {   /* test: <dir>/pd-resync-<pid>.bin, to compare two devices */
+		char path[1024];
+		FILE *f;
+		snprintf(path, sizeof(path), "%s/pd-resync-%d.bin", getenv("PD_NET_RELOC_DUMP"), (int)getpid());
+		if ((f = fopen(path, "wb"))) {
+			fwrite(out, 1, n64net_reloc_state_size_r(&s_Reloc, sp, n), f);
+			fclose(f);
+		}
+	}
+}
+
+s32 snapshotResyncLoad(const u8 *in)
+{
+	n64net_reloc_span sp[8];
+	n64net_reloc_stats st;
+	const s32 n = resyncSpans(sp);
+	if (!n) {
+		return 0;
+	}
+	n64net_reloc_scan(&s_Reloc);
+	const s32 ok = n64net_reloc_load(&s_Reloc, sp, n, in, NULL, &st);
+	sysLogPrintf(ok ? LOG_NOTE : LOG_ERROR, "resync load %s: %llu words kept, %llu translated, %llu own pointers, "
+		"%llu matched, %llu guessed, %llu split", ok ? "done" : "REFUSED", (unsigned long long)st.same,
+		(unsigned long long)st.translated, (unsigned long long)st.own_pointer, (unsigned long long)st.matched,
+		(unsigned long long)st.guessed, (unsigned long long)st.split);
+	if (ok && getenv("PD_NET_RELOC_DUMP")) {   /* test: the state right after the load, to compare with the host's */
+		const size_t size = n64net_reloc_state_size_r(&s_Reloc, sp, n);
+		u8 *after = malloc(size);
+		char path[1024];
+		FILE *f;
+		if (after) {
+			n64net_reloc_save(&s_Reloc, sp, n, after, &st);
+			snprintf(path, sizeof(path), "%s/pd-resync-%d-after.bin", getenv("PD_NET_RELOC_DUMP"), (int)getpid());
+			if ((f = fopen(path, "wb"))) {
+				fwrite(after, 1, size, f);
+				fclose(f);
+			}
+			free(after);
+		}
+	}
+	if (ok) {
+		for (s32 i = 0; i < s_NumSlots; i++) {
+			s_Slots[i].valid = 0;   /* the ring is from the old timeline */
+		}
+	}
+	return ok;
+}
+
 s32 snapshotCompare(s32 slota, s32 slotb, char *report, size_t reportlen)
 {
 	struct snapslot *a = &s_Slots[slota % s_NumSlots];
@@ -346,5 +459,8 @@ size_t snapshotLastSize(s32 slot) { (void)slot; return 0; }
 s32 snapshotCompare(s32 a, s32 b, char *r, size_t n) { (void)a; (void)b; if (n) r[0] = 0; return 0; }
 f64 snapshotLastSaveMs(void) { return 0; }
 f64 snapshotLastLoadMs(void) { return 0; }
+size_t snapshotResyncSize(void) { return 0; }
+void snapshotResyncSave(u8 *out) { (void)out; }
+s32 snapshotResyncLoad(const u8 *in) { (void)in; return 0; }
 
 #endif

@@ -955,3 +955,18 @@ void func00033f44(u8 index, u16 volume)
 		osSetIntMask(mask);
 	}
 }
+
+#include "system.h"
+/* resync tests: the sound player's lists, bounded (a cycle would hang sndpCountStates) */
+void sndpCheckLists(const char *when)
+{
+	struct sndstate *s;
+	s32 a = 0, f = 0, t = 0;
+	for (s = g_SndpAllocStatesHead; s && a < 1000; s = (struct sndstate *)s->node.next) a++;
+	for (s = g_SndpFreeStatesHead; s && f < 1000; s = (struct sndstate *)s->node.next) f++;
+	for (s = g_SndpAllocStatesTail; s && t < 1000; s = (struct sndstate *)s->node.prev) t++;
+	if (a >= 1000 || f >= 1000 || t >= 1000 || when[0] == '!') {
+		sysLogPrintf(LOG_NOTE, "sound lists %s: alloc %d, free %d, tail %d (heads %p %p %p)", when, a, f, t,
+			(void *)g_SndpAllocStatesHead, (void *)g_SndpFreeStatesHead, (void *)g_SndpAllocStatesTail);
+	}
+}

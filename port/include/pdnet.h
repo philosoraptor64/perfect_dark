@@ -51,6 +51,7 @@ void pdnetFilterStatus(OSContStatus *status, s32 count);
  * before that tick): called at the rollback point (rollback.c) */
 s32 pdnetRollbackActive(void);
 void pdnetRollbackPoint(void);
+void pdnetResyncPoint(void);   // after pdnetRollbackPoint: holds for a resync
 /* once per displayed frame: 1 = skip this frame's game step (time sync, this side is ahead) */
 s32 pdnetTimeSyncSkip(void);
 /* inside a host app: why the match ends (a desync, the friend gone); "" = it doesn't */

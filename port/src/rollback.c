@@ -151,8 +151,11 @@ void rollbackAfterTick(void)
 {
 	if (s_SyncTest) {
 		syncTestPoint();
-	} else if (pdnetRollbackActive()) {
-		pdnetRollbackPoint();
+	} else {
+		if (pdnetRollbackActive()) {
+			pdnetRollbackPoint();
+		}
+		pdnetResyncPoint();   // a resync after a desync (lockstep or rollback)
 	}
 }
 

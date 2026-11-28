@@ -356,7 +356,10 @@ if(APPLE)
   set(PD_SNAPSHOT_SOURCES ${SRC_GAME} ${SRC_LIB_MP3} ${SRC_LIB_NAUDIO} ${SRC_LIB_ULTRA_AUDIO} ${SRC_LIB_GU} ${SRC_LIB})
   list(FILTER PD_SNAPSHOT_SOURCES INCLUDE REGEX "\\.c$")
   set_source_files_properties(${PD_SNAPSHOT_SOURCES} PROPERTIES
-    COMPILE_OPTIONS "-include;${CMAKE_SOURCE_DIR}/port/include/snapshot_section.h;-fno-common")
+    COMPILE_OPTIONS "-include;${CMAKE_SOURCE_DIR}/port/include/snapshot_section.h;-fno-common;-ftrivial-auto-var-init=zero")
+  # -ftrivial-auto-var-init=zero: locals start zeroed, so the padding of structs copied into the state (the sound
+  # player's events: bcopy of a stack N_ALEvent) holds no leftover stack bytes. Those bytes differ per device and
+  # can look like addresses, which a resync (n64net_reloc) would then move: the guest's audio hung after a resync.
 endif()
 
 set(SRC

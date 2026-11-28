@@ -118,6 +118,12 @@ static OSContPad s_TickPads[4];
 static u64 s_StallUsecs = 0;
 static u32 s_Stalls = 0;
 static s32 s_DesyncReported = 0;
+// resync after a desync (n64net_resync_*, PD_NET_NO_RESYNC=1: off): the host's state comes over with pointers
+// translated (snapshotResync*, n64net_reloc.h)
+static s32 s_ResyncOn = 0, s_ResyncFailed = 0, s_ResyncLoaded = 0;
+static uint32_t s_ResyncsDone = 0;
+static s32 s_ResyncCheckTicks = 0;
+void sndpCheckLists(const char *when);   // n_sndplayer.c
 
 // rollback (PD_NET_ROLLBACK=1, the default; 0 = lockstep)
 #define PDNET_SLOTS 16
@@ -789,6 +795,18 @@ fail:
 }
 
 /* Game thread, once connected: the session's shared settings take effect. */
+static void cbResyncSave(void *user, uint8_t *out)
+{
+	(void)user;
+	snapshotResyncSave(out);
+}
+
+static void cbResyncLoad(void *user, const uint8_t *in)
+{
+	(void)user;
+	s_ResyncLoaded = snapshotResyncLoad(in);
+}
+
 static void activate(void)
 {
 	if (s_Session && !s_IsHost) {
@@ -831,6 +849,12 @@ static void activate(void)
 				}
 			}
 		}
+	}
+	s_ResyncOn = s_ResyncFailed = 0;
+	s_ResyncsDone = 0;
+	if (s_Net && !(envStr("PD_NET_NO_RESYNC") && atoi(envStr("PD_NET_NO_RESYNC"))) && snapshotResyncSize()) {
+		s_ResyncOn = 1;
+		n64net_resync_enable(s_Net, s_IsHost, (uint32_t)snapshotResyncSize(), cbResyncSave, cbResyncLoad, NULL);
 	}
 	// one full-screen view per machine (PD_NET_VIEW=split = classic split screen on both)
 	g_NetFullViews = !(envStr("PD_NET_VIEW") && strcmp(envStr("PD_NET_VIEW"), "split") == 0);
@@ -1270,6 +1294,13 @@ void pdnetEndTick(s32 tick, u64 hash)
 		return;
 	}
 
+	if (s_ResyncCheckTicks > 0) {   // after a resync: the sound player's lists stay sound (a cycle hangs it)
+		char when[40];
+		snprintf(when, sizeof(when), "tick %d", tick);   // (logged only if a list is broken)
+		sndpCheckLists(when);
+		s_ResyncCheckTicks--;
+	}
+
 	// test aid: PD_NET_TEST_DESYNC=tick nudges this side's RNG once (the sync check must notice)
 	static s32 desyncAt = -2;
 	if (desyncAt == -2) {
@@ -1290,10 +1321,33 @@ void pdnetEndTick(s32 tick, u64 hash)
 	u8 dkind;
 	if (!s_DesyncReported && n64net_sync_desynced(s_Net, &dtick, &dkind)) {
 		s_DesyncReported = 1;
-		sysLogPrintf(LOG_ERROR, "netplay: DESYNC detected at tick %u", dtick);
-		if (s_ExtSend && !s_EndReason[0]) {
-			snprintf(s_EndReason, sizeof(s_EndReason),
-				"The two games got out of step, so the match was stopped. (Both logs have the details.)");
+		sysLogPrintf(LOG_ERROR, "netplay: DESYNC detected at tick %u%s", dtick,
+			s_ResyncOn ? ": getting back in step (resync)" : "");
+	}
+	{
+		uint32_t done = 0;
+		const int rs = s_ResyncOn ? n64net_resync_status(s_Net, NULL, &done) : (s_DesyncReported ? 2 : 0);
+		if (rs == 2 && s_DesyncReported && !s_ResyncFailed) {   // no resync (or it failed): the match ends
+			s_ResyncFailed = 1;
+			if (s_ExtSend && !s_EndReason[0]) {
+				snprintf(s_EndReason, sizeof(s_EndReason),
+					"The two games got out of step, so the match was stopped. (Both logs have the details.)");
+			}
+		}
+		if (done != s_ResyncsDone) {   // back in step: a later desync is reported (and resynced) again
+			s_ResyncsDone = done;
+			s_DesyncReported = 0;
+			sysLogPrintf(LOG_NOTE, "netplay: back in step (resync %u)", done);
+		}
+	}
+	{   // test: a resync of states in step (PD_NET_RELOC_DUMP=<dir>: compare them)
+		static s32 resyncAt = -2;
+		if (resyncAt == -2) {
+			resyncAt = envStr("PD_NET_TEST_RESYNC") ? atoi(envStr("PD_NET_TEST_RESYNC")) : -1;
+		}
+		if (s_IsHost && s_ResyncOn && tick == resyncAt) {
+			n64net_resync_request(s_Net);
+			sysLogPrintf(LOG_NOTE, "netplay: test resync requested at tick %d", tick);
 		}
 	}
 
@@ -1454,6 +1508,52 @@ void pdnetRollbackPoint(void)
 				n64net_sync_record(s_Net, (u32)t, 0, (u32)(h ^ (h >> 32)));
 			}
 			s_LastSyncRecorded = t;
+		}
+	}
+}
+
+/* Frame boundary, online (after pdnetRollbackPoint): every machine holds at the host's tick while the host's
+ * state comes over (n64net_resync_hold). A rollback that comes in meanwhile is replayed first. */
+void pdnetResyncPoint(void)
+{
+	if (!s_Active || s_Offline || !s_ResyncOn || !s_Net) {
+		return;
+	}
+	const s32 tick = replayGetTick();
+	u64 start = 0;
+	uint32_t tmp;
+	s_ResyncLoaded = 0;
+	while (n64net_resync_hold(s_Net, (uint32_t)tick)) {
+		if (!start) {
+			start = nowUsecs();
+			sysLogPrintf(LOG_NOTE, "netplay: tick %d: holding for the resync", tick);
+		}
+		pollSocket();
+		n64net_input_resend(s_Net);
+		if (s_WindowOpen && n64net_peek_rollback(s_Net, &tmp)) {
+			pdnetRollbackPoint();
+			continue;
+		}
+		if (peerGone()) {
+			goOffline();
+			break;
+		}
+		usleep(300);
+	}
+	if (start) {
+		const u64 us = nowUsecs() - start;
+		s_StallUsecs += us;
+		sysLogPrintf(LOG_NOTE, "netplay: tick %d: resync hold over after %.2f s%s", tick, (double)us / 1e6,
+			s_ResyncLoaded ? " (the host's state is loaded)" : "");
+		if (s_ResyncLoaded) {
+			sndpCheckLists("!after the load");
+			s_ResyncCheckTicks = 300;
+			for (s32 t = 0; t < PDNET_HASH_RING; t++) {
+				s_TickHashValid[t] = -1;   // hashes of the old timeline
+			}
+			if (s_WindowOpen) {
+				pdnetRollbackPoint();   // saves the loaded state (the old ones are gone)
+			}
 		}
 	}
 }

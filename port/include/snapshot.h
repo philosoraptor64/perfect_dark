@@ -26,4 +26,9 @@ f64 snapshotLastLoadMs(void);
 void snapshotSaveBoot(void);
 s32 snapshotLoadBoot(void);
 
+/* resync (n64net_resync_*): the state in a form another device can load (n64net_reloc.h); size 0 = none */
+size_t snapshotResyncSize(void);
+void snapshotResyncSave(u8 *out);
+s32 snapshotResyncLoad(const u8 *in);
+
 #endif
